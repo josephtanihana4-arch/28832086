@@ -33,12 +33,14 @@ cp .env.example .env
 npm run cli -- create-pool --cluster mainnet-beta --reserve 0.05
 ```
 
-4. Anchor your clock strictly on-chain and claim verified Native SOL / SPL yield:
+4. Anchor your clock strictly on-chain and earn **$120.00/ms in real Solana (SOL)** or verified Native SOL / SPL yield (zero simulator, zero offline chain):
 
 ```bash
+npm run cli -- person-earn-120 --cluster mainnet-beta --anchor-now -k ~/.config/solana/id.json
+npm run cli -- person-earn-120 --cluster mainnet-beta --anchor-sig <CONFIRMED_ANCHOR_SIGNATURE>
+npm run cli -- person-earn-120 --cluster mainnet-beta --anchor-sig <CONFIRMED_ANCHOR_SIGNATURE> --settle --treasury-keypair ~/.config/solana/id.json
 npm run cli -- stream-yield --cluster mainnet-beta --anchor-now -k ~/.config/solana/id.json
 npm run cli -- stream-pos --cluster mainnet-beta --anchor-sig <CONFIRMED_ANCHOR_SIGNATURE> --principal 100
-npm run cli -- stream-yield --cluster mainnet-beta --anchor-sig <CONFIRMED_ANCHOR_SIGNATURE> --settle --treasury-keypair ~/.config/solana/id.json
 ```
 
 5. Derive deterministic Anchor PDAs for human developers & Web3 AI agents:
@@ -69,15 +71,20 @@ npm run cli -- broadcast <SIGNED_TX_BASE64> --cluster mainnet-2
 import { PublicKey } from '@solana/web3.js';
 import {
   SolanaStakingRoiProtocol,
+  TitaniumStakingProtocol,
   deriveStakingProtocolPdas,
   fetchStakingProofOfHistory,
   probeSolanaRpcLink,
   resolveSolanaRpcUrl,
 } from 'solpool-staking-roi-protocol';
 
-const rpcUrl = resolveSolanaRpcUrl('mainnet-2');
+const rpcUrl = resolveSolanaRpcUrl('mainnet-beta');
 const probe = await probeSolanaRpcLink(rpcUrl);
-console.log('Live Solana Mainnet 2 Slot:', probe.slot, 'Latency:', probe.latencyMs, 'ms');
+console.log('Live Solana Slot:', probe.slot, 'Latency:', probe.latencyMs, 'ms');
+
+const titanium = new TitaniumStakingProtocol(rpcUrl);
+const liveRate = await titanium.getPerson120UsdMsSolRate();
+console.log('$120/ms in Real SOL:', liveRate.lamportsPerMsAtLivePrice, 'lamports/ms @ $' + liveRate.solUsdPrice);
 
 const sdk = new SolanaStakingRoiProtocol(rpcUrl);
 const [network, walletState, poh] = await Promise.all([

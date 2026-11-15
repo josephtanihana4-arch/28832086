@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Activity,
+  Bot,
   Calculator,
   History,
   Layers,
@@ -20,10 +21,11 @@ import { type DraftProtocolState, ProtocolBuilder } from './components/ProtocolB
 import { RoiEngine } from './components/RoiEngine';
 import { RpcDeveloperHub } from './components/RpcDeveloperHub';
 import { StakingProofOfHistory } from './components/StakingProofOfHistory';
+import { DeveloperIncomeAgent } from './components/DeveloperIncomeAgent';
 import type { NetworkOverview, ProtocolConfig, SolanaCluster } from './types';
 import { type SolanaWalletProvider, detectSolanaProvider } from './utils/solanaWallet';
 
-type WorkspaceTab = 'overview' | 'roi' | 'builder' | 'protection' | 'poh' | 'rpc' | 'registry' | 'package';
+type WorkspaceTab = 'overview' | 'roi' | 'builder' | 'protection' | 'poh' | 'rpc' | 'registry' | 'package' | 'agent';
 
 const TAB_TITLES: Record<WorkspaceTab, string> = {
   overview: 'Mainnet Overview',
@@ -34,6 +36,7 @@ const TAB_TITLES: Record<WorkspaceTab, string> = {
   rpc: 'RPC & Developer Links',
   registry: 'Withdrawal Pool & Staking Registry',
   package: 'Node.js & Anchor Package',
+  agent: 'Person & AI Agent Income',
 };
 
 export default function App() {
@@ -180,6 +183,7 @@ export default function App() {
     { id: 'rpc', label: 'RPC & Dev Links', icon: Link2 },
     { id: 'registry', label: 'Withdrawal & Staking', icon: ShieldCheck },
     { id: 'package', label: 'Node.js Package', icon: Package },
+    { id: 'agent', label: 'Person & AI Agent Income', icon: Bot },
   ];
 
   const selectTab = (tab: WorkspaceTab) => {
@@ -499,6 +503,17 @@ export default function App() {
 
           {activeTab === 'package' && (
             <PackageStudio cluster={cluster} customRpcUrl={customRpcUrl} draft={draft} />
+          )}
+
+          {activeTab === 'agent' && (
+            <DeveloperIncomeAgent
+              cluster={cluster}
+              customRpcUrl={customRpcUrl}
+              rpcUrl={customRpcUrl || 'https://api.mainnet-beta.solana.com'}
+              walletPubkey={walletPubkey}
+              walletProvider={walletProvider}
+              onConnectWallet={handleConnectWallet}
+            />
           )}
         </main>
       </div>

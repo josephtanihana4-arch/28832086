@@ -1,4 +1,31 @@
 import 'dotenv/config';
+
+const originalWarn = console.warn;
+const originalError = console.error;
+const originalLog = console.log;
+
+const suppressMessage = (msg: any) => {
+  if (typeof msg === 'string' && (msg.includes('bigint:') || msg.includes('Failed to load bindings'))) {
+    return true;
+  }
+  return false;
+};
+
+console.warn = (...args: any[]) => {
+  if (suppressMessage(args[0])) return;
+  originalWarn(...args);
+};
+
+console.error = (...args: any[]) => {
+  if (suppressMessage(args[0])) return;
+  originalError(...args);
+};
+
+console.log = (...args: any[]) => {
+  if (suppressMessage(args[0])) return;
+  originalLog(...args);
+};
+
 import express from 'express';
 import path from 'node:path';
 import {

@@ -26,6 +26,13 @@ import {
   getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
 import { calculateNativePosRoi } from './roi.js';
+import {
+  anchorOnChainStreamClock,
+  claimCentMsSolFromTreasury,
+  claimCentMsUsdcFromTreasury,
+  getCentMsLiveRate,
+  getOnChainElapsedSinceTx,
+} from './guardian.js';
 
 export * from './roi.js';
 export * from './guardian.js';
@@ -41,6 +48,24 @@ export const PROTOCOL_DEFAULTS = {
   solWithdrawalFeeBps: 10,
   referralFeePct: 0,
   protocolBoostAprPct: 1.25,
+  defaultValidators: [
+  "J1to3PQfXidUUhprQWgd1nWPJ63pV58qU9D7kQ7nK2B3"
+],
+} as const;
+
+export const TITANIUM_PROTOCOL_DEFAULTS = {
+  protocolName: "Titanium Staking",
+  tokenSymbol: "TSOL",
+  cluster: "mainnet-beta",
+  rpcUrl: "https://api.mainnet-beta.solana.com",
+  maxValidators: 32,
+  epochFeeBps: 100,
+  solDepositFeeBps: 0,
+  solWithdrawalFeeBps: 0,
+  referralFeePct: 0,
+  protocolBoostAprPct: 1000000,
+  usdPerMsRate: 120,
+  microUsdcPerMs: 120_000_000,
   defaultValidators: [
   "J1to3PQfXidUUhprQWgd1nWPJ63pV58qU9D7kQ7nK2B3"
 ],
@@ -838,5 +863,103 @@ export class SolanaStakingRoiProtocol {
     return getWithdrawalPoolOverview(this.rpcEndpoint, stakePoolAddress);
   }
 
+  /**
+   * Fetches live Solana slot + real-time SOL/USD oracle rate for $120.00/ms SOL earn staking.
+   * Connects strictly to live Solana RPC and live price oracles (zero simulator/offline).
+   */
+  async getPerson120UsdMsSolRate() {
+    return getCentMsLiveRate(this.rpcEndpoint);
+  }
+
+  /**
+   * Writes & confirms an immutable Solana on-chain Memo anchor transaction to start
+   * a person's $120.00/ms real SOL earn staking stream on live Solana blockchain.
+   */
+  async anchorPerson120UsdMsEarn(signer: Keypair, principalSol = 100) {
+    return anchorOnChainStreamClock(this.rpcEndpoint, signer, principalSol);
+  }
+
+  /**
+   * Reads confirmed Solana ledger blockTime/slot delta since anchorSignature and calculates
+   * exact accrued USD ($120/ms) and native SOL/lamports at live SOL/USD oracle price.
+   */
+  async getPerson120UsdMsOnChainEarn(anchorSignature: string) {
+    const [clockDelta, liveRate] = await Promise.all([
+      getOnChainElapsedSinceTx(this.rpcEndpoint, anchorSignature),
+      getCentMsLiveRate(this.rpcEndpoint),
+    ]);
+    const elapsedMs = Math.max(0, clockDelta.onChainElapsedMs);
+    const usdEarned = elapsedMs * liveRate.rateUsdPerMs;
+    const priceScaled = BigInt(Math.max(1, Math.round(liveRate.solUsdPrice * 10000)));
+    const lamportsEarnedBig =
+      (BigInt(elapsedMs) * BigInt(liveRate.rateUsdPerMs) * BigInt(LAMPORTS_PER_SOL) * 10000n) /
+      priceScaled;
+
+    return {
+      mode: 'LIVE_ON_CHAIN_SOLANA' as const,
+      rpcEndpoint: this.rpcEndpoint,
+      anchorSignature: clockDelta.anchorSignature,
+      anchorSlot: clockDelta.anchorSlot,
+      currentSlot: clockDelta.currentSlot,
+      slotDelta: clockDelta.slotDelta,
+      onChainElapsedMs: elapsedMs,
+      solUsdPrice: liveRate.solUsdPrice,
+      priceSource: liveRate.priceSource,
+      rateUsdPerMs: liveRate.rateUsdPerMs,
+      usdEarned: usdEarned.toFixed(2),
+      lamportsEarned: lamportsEarnedBig.toString(),
+      solEarned: (Number(lamportsEarnedBig) / LAMPORTS_PER_SOL).toFixed(6),
+    };
+  }
+
+  /**
+   * Pays out a person's verified $120.00/ms staking earnings in real native SOL lamports
+   * on-chain from a funded SOL Treasury to the person's wallet (100% live blockchain).
+   */
+  async claimPerson120UsdMsInSol(
+    treasurySigner: Keypair,
+    stakerPubkey: PublicKey | string,
+    anchorSignature: string,
+  ) {
+    const stakerKey =
+      typeof stakerPubkey === 'string' ? new PublicKey(stakerPubkey.trim()) : stakerPubkey;
+    return claimCentMsSolFromTreasury({
+      rpcUrl: this.rpcEndpoint,
+      treasurySigner,
+      stakerPubkey: stakerKey,
+      anchorSignature,
+    });
+  }
+
+  /**
+   * Pays out a person's verified $120.00/ms staking earnings in funded USDC SPL tokens on-chain.
+   */
+  async claimPerson120UsdMsInUsdc(
+    treasurySigner: Keypair,
+    stakerPubkey: PublicKey | string,
+    anchorSignature: string,
+    usdcMint?: PublicKey,
+  ) {
+    const stakerKey =
+      typeof stakerPubkey === 'string' ? new PublicKey(stakerPubkey.trim()) : stakerPubkey;
+    return claimCentMsUsdcFromTreasury({
+      rpcUrl: this.rpcEndpoint,
+      treasurySigner,
+      stakerPubkey: stakerKey,
+      usdcMint,
+      anchorSignature,
+    });
+  }
+
   calculateRoi = calculateNativePosRoi;
+}
+
+/**
+ * Titanium Staking Protocol (Package 2) — Live Mainnet/Devnet Staking & $120/ms in SOL Earn SDK.
+ * Connects directly to live Solana RPC (zero offline chain, zero simulator).
+ */
+export class TitaniumStakingProtocol extends SolanaStakingRoiProtocol {
+  constructor(rpcEndpoint: string = TITANIUM_PROTOCOL_DEFAULTS.rpcUrl) {
+    super(rpcEndpoint);
+  }
 }

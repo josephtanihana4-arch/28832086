@@ -8,6 +8,7 @@ import { Keypair, PublicKey } from '@solana/web3.js';
 import {
   PROTOCOL_DEFAULTS,
   SolanaStakingRoiProtocol,
+  TitaniumStakingProtocol,
   calculateNativePosRoi,
   deriveStakingProtocolPdas,
 } from './index.js';
@@ -306,6 +307,53 @@ program
         });
         console.log('$120/ms USDC Settled On-Chain:', res);
       }
+    }
+  });
+
+program
+  .command('person-earn-120')
+  .description('100% On-Chain Titanium Staking: person earns $120.00/ms in real Solana (SOL) backed by live blockchain clock & oracle')
+  .option('-c, --cluster <cluster>', 'Solana cluster (mainnet-beta | mainnet-2 | devnet | testnet)', 'mainnet-beta')
+  .option('-r, --rpc <url>', 'Custom Solana RPC endpoint')
+  .option('-p, --principal <sol>', 'Person staked SOL principal (0.000000001 to unlimited)', '100')
+  .option('--anchor-sig <sig>', 'Confirmed on-chain Solana anchor tx signature')
+  .option('--anchor-now', 'Write and confirm a new on-chain Memo anchor transaction right now', false)
+  .option('-k, --keypair <path>', 'Signer keypair JSON path when using --anchor-now')
+  .option('--settle', 'Sign and execute live $120/ms payout in real SOL on-chain', false)
+  .option('--treasury-keypair <path>', 'Funded SOL Treasury keypair JSON path')
+  .option('--recipient <pubkey>', 'Person wallet pubkey to receive SOL (defaults to treasury pubkey)')
+  .action(async (opts) => {
+    const rpcUrl = getRpcUrl(opts.cluster, opts.rpc);
+    const sdk = new TitaniumStakingProtocol(rpcUrl);
+
+    let anchorSig = opts.anchorSig as string | undefined;
+    if (opts.anchorNow) {
+      const signer = loadKeypair(opts.keypair || opts.treasuryKeypair);
+      const anchored = await sdk.anchorPerson120UsdMsEarn(signer, Number(opts.principal));
+      console.log('Anchored On-Chain $120/ms SOL Earn Stream:', anchored);
+      anchorSig = anchored.anchorSignature;
+      if (!opts.settle) {
+        return;
+      }
+    }
+
+    if (!anchorSig || anchorSig.trim().length <= 20) {
+      throw new Error(
+        'Confirmed --anchor-sig <sig> or --anchor-now is required. Simulator and offline chain modes are disabled.',
+      );
+    }
+
+    const earnStatus = await sdk.getPerson120UsdMsOnChainEarn(anchorSig);
+    console.log('LIVE ON-CHAIN $120/MS IN SOLANA EARN STATUS:');
+    console.table(earnStatus);
+
+    if (opts.settle) {
+      const treasurySigner = loadKeypair(opts.treasuryKeypair);
+      const stakerPubkey = opts.recipient
+        ? new PublicKey(opts.recipient)
+        : treasurySigner.publicKey;
+      const settled = await sdk.claimPerson120UsdMsInSol(treasurySigner, stakerPubkey, anchorSig);
+      console.log('Confirmed On-Chain $120/ms Real SOL Payout:', settled);
     }
   });
 

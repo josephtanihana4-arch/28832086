@@ -227,7 +227,7 @@ export function ProtectionGuardian({
     }
 
     try {
-      const principalSol = isPos ? Math.max(0.01, Number(posPrincipalInput) || 100) : 100;
+      const principalSol = isPos ? Math.max(0.000000001, Number(posPrincipalInput) || 100) : Math.max(0.000000001, Number(posPrincipalInput) || 100);
       const res = await fetch('/api/stream/anchor-tx', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

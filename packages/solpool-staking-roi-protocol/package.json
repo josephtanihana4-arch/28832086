@@ -1,7 +1,7 @@
 {
   "name": "solpool-staking-roi-protocol",
   "version": "1.0.0",
-  "description": "SolPool Sovereign Staking (spSOL) — Standalone Solana Proof-of-Stake ROI Protocol & SPL Stake Pool SDK connected to mainnet-beta",
+  "description": "SolPool & Titanium Unified Staking Protocol (spSOL / TSOL) — Standalone Solana Proof-of-Stake ROI & SPL Stake Pool SDK connected to mainnet",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

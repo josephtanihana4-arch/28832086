@@ -153,7 +153,7 @@ pub mod solpool_staking_roi_protocol {
     }
 
     pub fn stake_protected(ctx: Context<StakeProtected>, lamports: u64) -> Result<()> {
-        require!(lamports >= 10_000_000, RoiError::MinimumStakeNotMet);
+        require!(lamports >= 1, RoiError::MinimumStakeNotMet);
         let clock = Clock::get()?;
         let slot_hash = read_latest_slot_hash(&ctx.accounts.slot_hashes.to_account_info())?;
         let pool = &mut ctx.accounts.protocol_state;
@@ -505,6 +505,105 @@ pub mod solpool_staking_roi_protocol {
             poh_sequence: pos.poh_sequence,
             amount: owed_units,
         });
+        Ok(())
+    }
+
+    /// Claims real $120.00 USD per millisecond paid in native SOL lamports from the funded
+    /// on-chain SOL Yield Treasury PDA at live SOL/USD oracle price, enforcing PoH & solvency.
+    pub fn claim_120usd_ms_sol_earn(
+        ctx: Context<ClaimMillisecondSolYield>,
+        sol_usd_price_micros: u64,
+    ) -> Result<()> {
+        require!(sol_usd_price_micros > 0, RoiError::ZeroAmount);
+        let clock = Clock::get()?;
+        let slot_hash = read_latest_slot_hash(&ctx.accounts.slot_hashes.to_account_info())?;
+        let pool = &mut ctx.accounts.protocol_state;
+        let pool_key = pool.key();
+        let pos = &mut ctx.accounts.position;
+
+        require!(pos.principal_lamports > 0, RoiError::MinimumStakeNotMet);
+
+        let ts_delta_ms = clock
+            .unix_timestamp
+            .saturating_sub(pos.last_claim_timestamp) as u128
+            * 1000;
+        let slot_delta_ms = clock.slot.saturating_sub(pos.last_claim_slot) as u128 * 400;
+        let elapsed_ms = ts_delta_ms.max(slot_delta_ms);
+
+        require!(elapsed_ms > 0, RoiError::NothingToClaimYet);
+
+        let accrued_u128 = elapsed_ms
+            .checked_mul(pool.micro_usd_per_ms as u128)
+            .ok_or(RoiError::MathOverflow)?
+            .checked_mul(1_000_000_000u128)
+            .ok_or(RoiError::MathOverflow)?
+            .checked_div(sol_usd_price_micros as u128)
+            .ok_or(RoiError::MathOverflow)?;
+
+        let accrued_lamports = accrued_u128.min(u64::MAX as u128) as u64;
+        require!(accrued_lamports > 0, RoiError::NothingToClaimYet);
+
+        let rent_floor = Rent::get()?.minimum_balance(0);
+        let available = ctx
+            .accounts
+            .sol_yield_treasury
+            .lamports()
+            .saturating_sub(rent_floor);
+        require!(
+            available >= accrued_lamports,
+            RoiError::InsufficientSolTreasury
+        );
+
+        **ctx.accounts.sol_yield_treasury.try_borrow_mut_lamports()? -= accrued_lamports;
+        **ctx.accounts.staker.try_borrow_mut_lamports()? += accrued_lamports;
+
+        let prev_pos_poh = pos.last_poh_hash;
+        let next_pos_poh = advance_staking_poh_hash(
+            &prev_pos_poh,
+            &slot_hash,
+            clock.slot,
+            clock.epoch,
+            clock.unix_timestamp,
+            &ctx.accounts.staker.key(),
+            accrued_lamports,
+            b"CLAIM_120USD_SOL",
+        );
+
+        pos.total_native_sol_claimed = pos
+            .total_native_sol_claimed
+            .checked_add(accrued_lamports)
+            .ok_or(RoiError::MathOverflow)?;
+        pos.last_claim_timestamp = clock.unix_timestamp;
+        pos.last_claim_slot = clock.slot;
+        pos.poh_sequence = pos.poh_sequence.saturating_add(1);
+        pos.last_poh_hash = next_pos_poh;
+
+        pool.poh_sequence = pool.poh_sequence.saturating_add(1);
+        pool.last_poh_hash = advance_staking_poh_hash(
+            &pool.last_poh_hash,
+            &slot_hash,
+            clock.slot,
+            clock.epoch,
+            clock.unix_timestamp,
+            &ctx.accounts.staker.key(),
+            accrued_lamports,
+            b"CLAIM_120USD_SOL",
+        );
+
+        emit!(StakingPohEvent {
+            protocol_state: pool_key,
+            staker: ctx.accounts.staker.key(),
+            action: *b"CLAIM_120USD_SOL",
+            slot: clock.slot,
+            epoch: clock.epoch,
+            unix_timestamp: clock.unix_timestamp,
+            slot_hash,
+            previous_poh_hash: prev_pos_poh,
+            next_poh_hash: next_pos_poh,
+            poh_sequence: pos.poh_sequence,
+            amount: accrued_lamports,
+        });
+
         Ok(())
     }
 

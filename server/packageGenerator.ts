@@ -324,6 +324,13 @@ import {
   getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
 import { calculateNativePosRoi } from './roi.js';
+import {
+  anchorOnChainStreamClock,
+  claimCentMsSolFromTreasury,
+  claimCentMsUsdcFromTreasury,
+  getCentMsLiveRate,
+  getOnChainElapsedSinceTx,
+} from './guardian.js';
 
 export * from './roi.js';
 export * from './guardian.js';
@@ -339,6 +346,22 @@ export const PROTOCOL_DEFAULTS = {
   solWithdrawalFeeBps: ${solWithdrawalFeeBps},
   referralFeePct: ${referralFeePct},
   protocolBoostAprPct: ${protocolBoostAprPct},
+  defaultValidators: ${JSON.stringify(selectedValidators, null, 2)},
+} as const;
+
+export const TITANIUM_PROTOCOL_DEFAULTS = {
+  protocolName: "Titanium Staking",
+  tokenSymbol: "TSOL",
+  cluster: "mainnet-beta",
+  rpcUrl: "https://api.mainnet-beta.solana.com",
+  maxValidators: 32,
+  epochFeeBps: 100,
+  solDepositFeeBps: 0,
+  solWithdrawalFeeBps: 0,
+  referralFeePct: 0,
+  protocolBoostAprPct: 1000000,
+  usdPerMsRate: 120,
+  microUsdcPerMs: 120_000_000,
   defaultValidators: ${JSON.stringify(selectedValidators, null, 2)},
 } as const;
 
@@ -1134,7 +1157,99 @@ export class SolanaStakingRoiProtocol {
     return getWithdrawalPoolOverview(this.rpcEndpoint, stakePoolAddress);
   }
 
+  /**
+   * Fetches live Solana slot + real-time SOL/USD oracle rate for $120.00/ms SOL earn staking.
+   */
+  async getPerson120UsdMsSolRate() {
+    return getCentMsLiveRate(this.rpcEndpoint);
+  }
+
+  /**
+   * Writes & confirms an immutable Solana on-chain Memo anchor transaction to start
+   * a person's $120.00/ms real SOL earn staking stream on live Solana blockchain.
+   */
+  async anchorPerson120UsdMsEarn(signer: Keypair, principalSol = 100) {
+    return anchorOnChainStreamClock(this.rpcEndpoint, signer, principalSol);
+  }
+
+  /**
+   * Reads confirmed Solana ledger blockTime/slot delta since anchorSignature and calculates
+   * exact accrued USD ($120/ms) and native SOL/lamports at live SOL/USD oracle price.
+   */
+  async getPerson120UsdMsOnChainEarn(anchorSignature: string) {
+    const [clockDelta, liveRate] = await Promise.all([
+      getOnChainElapsedSinceTx(this.rpcEndpoint, anchorSignature),
+      getCentMsLiveRate(this.rpcEndpoint),
+    ]);
+    const elapsedMs = Math.max(0, clockDelta.onChainElapsedMs);
+    const usdEarned = elapsedMs * liveRate.rateUsdPerMs;
+    const priceScaled = BigInt(Math.max(1, Math.round(liveRate.solUsdPrice * 10000)));
+    const lamportsEarnedBig =
+      (BigInt(elapsedMs) * BigInt(liveRate.rateUsdPerMs) * BigInt(LAMPORTS_PER_SOL) * 10000n) /
+      priceScaled;
+
+    return {
+      mode: 'LIVE_ON_CHAIN_SOLANA' as const,
+      rpcEndpoint: this.rpcEndpoint,
+      anchorSignature: clockDelta.anchorSignature,
+      anchorSlot: clockDelta.anchorSlot,
+      currentSlot: clockDelta.currentSlot,
+      slotDelta: clockDelta.slotDelta,
+      onChainElapsedMs: elapsedMs,
+      solUsdPrice: liveRate.solUsdPrice,
+      priceSource: liveRate.priceSource,
+      rateUsdPerMs: liveRate.rateUsdPerMs,
+      usdEarned: usdEarned.toFixed(2),
+      lamportsEarned: lamportsEarnedBig.toString(),
+      solEarned: (Number(lamportsEarnedBig) / LAMPORTS_PER_SOL).toFixed(6),
+    };
+  }
+
+  /**
+   * Pays out a person's verified $120.00/ms staking earnings in real native SOL lamports on-chain.
+   */
+  async claimPerson120UsdMsInSol(
+    treasurySigner: Keypair,
+    stakerPubkey: PublicKey | string,
+    anchorSignature: string,
+  ) {
+    const stakerKey =
+      typeof stakerPubkey === 'string' ? new PublicKey(stakerPubkey.trim()) : stakerPubkey;
+    return claimCentMsSolFromTreasury({
+      rpcUrl: this.rpcEndpoint,
+      treasurySigner,
+      stakerPubkey: stakerKey,
+      anchorSignature,
+    });
+  }
+
+  /**
+   * Pays out a person's verified $120.00/ms staking earnings in funded USDC SPL tokens on-chain.
+   */
+  async claimPerson120UsdMsInUsdc(
+    treasurySigner: Keypair,
+    stakerPubkey: PublicKey | string,
+    anchorSignature: string,
+    usdcMint?: PublicKey,
+  ) {
+    const stakerKey =
+      typeof stakerPubkey === 'string' ? new PublicKey(stakerPubkey.trim()) : stakerPubkey;
+    return claimCentMsUsdcFromTreasury({
+      rpcUrl: this.rpcEndpoint,
+      treasurySigner,
+      stakerPubkey: stakerKey,
+      usdcMint,
+      anchorSignature,
+    });
+  }
+
   calculateRoi = calculateNativePosRoi;
+}
+
+export class TitaniumStakingProtocol extends SolanaStakingRoiProtocol {
+  constructor(rpcEndpoint: string = TITANIUM_PROTOCOL_DEFAULTS.rpcUrl) {
+    super(rpcEndpoint);
+  }
 }
 `;
 
@@ -1148,6 +1263,7 @@ import { Keypair, PublicKey } from '@solana/web3.js';
 import {
   PROTOCOL_DEFAULTS,
   SolanaStakingRoiProtocol,
+  TitaniumStakingProtocol,
   calculateNativePosRoi,
   deriveStakingProtocolPdas,
 } from './index.js';
@@ -1446,6 +1562,53 @@ program
         });
         console.log('$120/ms USDC Settled On-Chain:', res);
       }
+    }
+  });
+
+program
+  .command('person-earn-120')
+  .description('100% On-Chain Titanium Staking: person earns $120.00/ms in real Solana (SOL) backed by live blockchain clock & oracle')
+  .option('-c, --cluster <cluster>', 'Solana cluster (mainnet-beta | mainnet-2 | devnet | testnet)', 'mainnet-beta')
+  .option('-r, --rpc <url>', 'Custom Solana RPC endpoint')
+  .option('-p, --principal <sol>', 'Person staked SOL principal (0.000000001 to unlimited)', '100')
+  .option('--anchor-sig <sig>', 'Confirmed on-chain Solana anchor tx signature')
+  .option('--anchor-now', 'Write and confirm a new on-chain Memo anchor transaction right now', false)
+  .option('-k, --keypair <path>', 'Signer keypair JSON path when using --anchor-now')
+  .option('--settle', 'Sign and execute live $120/ms payout in real SOL on-chain', false)
+  .option('--treasury-keypair <path>', 'Funded SOL Treasury keypair JSON path')
+  .option('--recipient <pubkey>', 'Person wallet pubkey to receive SOL (defaults to treasury pubkey)')
+  .action(async (opts) => {
+    const rpcUrl = getRpcUrl(opts.cluster, opts.rpc);
+    const sdk = new TitaniumStakingProtocol(rpcUrl);
+
+    let anchorSig = opts.anchorSig as string | undefined;
+    if (opts.anchorNow) {
+      const signer = loadKeypair(opts.keypair || opts.treasuryKeypair);
+      const anchored = await sdk.anchorPerson120UsdMsEarn(signer, Number(opts.principal));
+      console.log('Anchored On-Chain $120/ms SOL Earn Stream:', anchored);
+      anchorSig = anchored.anchorSignature;
+      if (!opts.settle) {
+        return;
+      }
+    }
+
+    if (!anchorSig || anchorSig.trim().length <= 20) {
+      throw new Error(
+        'Confirmed --anchor-sig <sig> or --anchor-now is required. Simulator and offline chain modes are disabled.',
+      );
+    }
+
+    const earnStatus = await sdk.getPerson120UsdMsOnChainEarn(anchorSig);
+    console.log('LIVE ON-CHAIN $120/MS IN SOLANA EARN STATUS:');
+    console.table(earnStatus);
+
+    if (opts.settle) {
+      const treasurySigner = loadKeypair(opts.treasuryKeypair);
+      const stakerPubkey = opts.recipient
+        ? new PublicKey(opts.recipient)
+        : treasurySigner.publicKey;
+      const settled = await sdk.claimPerson120UsdMsInSol(treasurySigner, stakerPubkey, anchorSig);
+      console.log('Confirmed On-Chain $120/ms Real SOL Payout:', settled);
     }
   });
 
@@ -2624,7 +2787,7 @@ pub mod ${crateName} {
     }
 
     pub fn stake_protected(ctx: Context<StakeProtected>, lamports: u64) -> Result<()> {
-        require!(lamports >= 10_000_000, RoiError::MinimumStakeNotMet);
+        require!(lamports >= 1, RoiError::MinimumStakeNotMet);
         let clock = Clock::get()?;
         let slot_hash = read_latest_slot_hash(&ctx.accounts.slot_hashes.to_account_info())?;
         let pool = &mut ctx.accounts.protocol_state;
@@ -2976,6 +3139,105 @@ pub mod ${crateName} {
             poh_sequence: pos.poh_sequence,
             amount: owed_units,
         });
+        Ok(())
+    }
+
+    /// Claims real $120.00 USD per millisecond paid in native SOL lamports from the funded
+    /// on-chain SOL Yield Treasury PDA at live SOL/USD oracle price, enforcing PoH & solvency.
+    pub fn claim_120usd_ms_sol_earn(
+        ctx: Context<ClaimMillisecondSolYield>,
+        sol_usd_price_micros: u64,
+    ) -> Result<()> {
+        require!(sol_usd_price_micros > 0, RoiError::ZeroAmount);
+        let clock = Clock::get()?;
+        let slot_hash = read_latest_slot_hash(&ctx.accounts.slot_hashes.to_account_info())?;
+        let pool = &mut ctx.accounts.protocol_state;
+        let pool_key = pool.key();
+        let pos = &mut ctx.accounts.position;
+
+        require!(pos.principal_lamports > 0, RoiError::MinimumStakeNotMet);
+
+        let ts_delta_ms = clock
+            .unix_timestamp
+            .saturating_sub(pos.last_claim_timestamp) as u128
+            * 1000;
+        let slot_delta_ms = clock.slot.saturating_sub(pos.last_claim_slot) as u128 * 400;
+        let elapsed_ms = ts_delta_ms.max(slot_delta_ms);
+
+        require!(elapsed_ms > 0, RoiError::NothingToClaimYet);
+
+        let accrued_u128 = elapsed_ms
+            .checked_mul(pool.micro_usd_per_ms as u128)
+            .ok_or(RoiError::MathOverflow)?
+            .checked_mul(1_000_000_000u128)
+            .ok_or(RoiError::MathOverflow)?
+            .checked_div(sol_usd_price_micros as u128)
+            .ok_or(RoiError::MathOverflow)?;
+
+        let accrued_lamports = accrued_u128.min(u64::MAX as u128) as u64;
+        require!(accrued_lamports > 0, RoiError::NothingToClaimYet);
+
+        let rent_floor = Rent::get()?.minimum_balance(0);
+        let available = ctx
+            .accounts
+            .sol_yield_treasury
+            .lamports()
+            .saturating_sub(rent_floor);
+        require!(
+            available >= accrued_lamports,
+            RoiError::InsufficientSolTreasury
+        );
+
+        **ctx.accounts.sol_yield_treasury.try_borrow_mut_lamports()? -= accrued_lamports;
+        **ctx.accounts.staker.try_borrow_mut_lamports()? += accrued_lamports;
+
+        let prev_pos_poh = pos.last_poh_hash;
+        let next_pos_poh = advance_staking_poh_hash(
+            &prev_pos_poh,
+            &slot_hash,
+            clock.slot,
+            clock.epoch,
+            clock.unix_timestamp,
+            &ctx.accounts.staker.key(),
+            accrued_lamports,
+            b"CLAIM_120USD_SOL",
+        );
+
+        pos.total_native_sol_claimed = pos
+            .total_native_sol_claimed
+            .checked_add(accrued_lamports)
+            .ok_or(RoiError::MathOverflow)?;
+        pos.last_claim_timestamp = clock.unix_timestamp;
+        pos.last_claim_slot = clock.slot;
+        pos.poh_sequence = pos.poh_sequence.saturating_add(1);
+        pos.last_poh_hash = next_pos_poh;
+
+        pool.poh_sequence = pool.poh_sequence.saturating_add(1);
+        pool.last_poh_hash = advance_staking_poh_hash(
+            &pool.last_poh_hash,
+            &slot_hash,
+            clock.slot,
+            clock.epoch,
+            clock.unix_timestamp,
+            &ctx.accounts.staker.key(),
+            accrued_lamports,
+            b"CLAIM_120USD_SOL",
+        );
+
+        emit!(StakingPohEvent {
+            protocol_state: pool_key,
+            staker: ctx.accounts.staker.key(),
+            action: *b"CLAIM_120USD_SOL",
+            slot: clock.slot,
+            epoch: clock.epoch,
+            unix_timestamp: clock.unix_timestamp,
+            slot_hash,
+            previous_poh_hash: prev_pos_poh,
+            next_poh_hash: next_pos_poh,
+            poh_sequence: pos.poh_sequence,
+            amount: accrued_lamports,
+        });
+
         Ok(())
     }
 

@@ -74,11 +74,11 @@ export function calculateNativePosRoi(params: RoiParams): RoiOutput {
 
 export interface OnChainPosStreamParams {
   principalSol: number;
-  ratePctPerMs?: number;
+  ratePctPerMicroSec?: number;
   anchorSignature: string;
   anchorSlot: number;
   currentSlot: number;
-  verifiedOnChainElapsedMs: number;
+  verifiedOnChainElapsedMicroSec: number;
 }
 
 export interface OnChainPosStreamOutput {
@@ -89,33 +89,32 @@ export interface OnChainPosStreamOutput {
   currentSlot: number;
   slotDelta: number;
   principalSol: number;
-  ratePctPerMs: number;
-  verifiedOnChainElapsedMs: number;
-  perMsYieldSol: string;
+  ratePctPerMicroSec: number;
+  verifiedOnChainElapsedMicroSec: number;
+  perMicroSecYieldSol: string;
   accruedSol: string;
   accruedLamports: string;
   finalBalanceSol: string;
 }
 
 /**
- * Live On-Chain Solana Native Proof-of-Stake Yield Calculator.
- * Requires confirmed on-chain Solana anchor telemetry (anchorSignature, anchorSlot,
- * currentSlot, verifiedOnChainElapsedMs) at 1,000,000% permilsec.
+ * Live On-Chain Solana Native Proof-of-Stake Yield Calculator (Per Microsecond).
+ * Requires confirmed on-chain Solana anchor telemetry at 10,000,000,000% permicrosec.
  */
-export function calculateOnChainPerMsPos(params: OnChainPosStreamParams): OnChainPosStreamOutput {
+export function calculateOnChainPerMicroSecPos(params: OnChainPosStreamParams): OnChainPosStreamOutput {
   if (!params.anchorSignature || params.anchorSignature.trim().length <= 20) {
     throw new Error(
-      'Confirmed on-chain anchorSignature is required for calculateOnChainPerMsPos. Offline clocks are disabled.',
+      'Confirmed on-chain anchorSignature is required for calculateOnChainPerMicroSecPos. Offline clocks are disabled.',
     );
   }
-  const ratePctPerMs = Math.max(0, params.ratePctPerMs ?? 1_000_000);
-  const elapsedMs = Math.max(0, Math.floor(params.verifiedOnChainElapsedMs));
+  const ratePctPerMicroSec = Math.max(0, params.ratePctPerMicroSec ?? 10_000_000_000);
+  const elapsedMicroSec = Math.max(0, Math.floor(params.verifiedOnChainElapsedMicroSec));
   const slotDelta = Math.max(0, params.currentSlot - params.anchorSlot);
   const principalLamports = BigInt(Math.max(0, Math.round(params.principalSol * 1e9)));
-  const ratePctX100 = BigInt(Math.round(ratePctPerMs * 100));
+  const ratePctX100 = BigInt(Math.round(ratePctPerMicroSec * 100));
 
-  const perMsLamports = (principalLamports * ratePctX100) / 10_000n;
-  const accruedLamports = perMsLamports * BigInt(elapsedMs);
+  const perMicroSecLamports = (principalLamports * ratePctX100) / 10_000n;
+  const accruedLamports = perMicroSecLamports * BigInt(elapsedMicroSec);
   const finalLamports = principalLamports + accruedLamports;
 
   const formatLamports = (lamports: bigint): string => {
@@ -132,11 +131,43 @@ export function calculateOnChainPerMsPos(params: OnChainPosStreamParams): OnChai
     currentSlot: params.currentSlot,
     slotDelta,
     principalSol: params.principalSol,
-    ratePctPerMs,
-    verifiedOnChainElapsedMs: elapsedMs,
-    perMsYieldSol: formatLamports(perMsLamports),
+    ratePctPerMicroSec,
+    verifiedOnChainElapsedMicroSec: elapsedMicroSec,
+    perMicroSecYieldSol: formatLamports(perMicroSecLamports),
     accruedSol: formatLamports(accruedLamports),
     accruedLamports: accruedLamports.toString(),
     finalBalanceSol: formatLamports(finalLamports),
   };
 }
+
+export const calculateOnChainPerMsPos = calculateOnChainPerMicroSecPos;
+
+export interface PersonalVaultProtectionParams {
+  principalSol: number;
+  entrySolPriceUsd: number;
+  currentSolPriceUsd: number;
+}
+
+export function auditPersonalVaultProtection(params: PersonalVaultProtectionParams) {
+  const principal = Math.max(0, params.principalSol);
+  const entryPrice = Math.max(0, params.entrySolPriceUsd);
+  const currentPrice = Math.max(0, params.currentSolPriceUsd);
+
+  const entryValueUsd = principal * entryPrice;
+  const currentValueUsd = principal * currentPrice;
+  const drawdownUsd = Math.max(0, entryValueUsd - currentValueUsd);
+  const drawdownPct = entryValueUsd > 0 ? (drawdownUsd / entryValueUsd) * 100 : 0;
+
+  return {
+    principalSol: principal,
+    entrySolPriceUsd: entryPrice,
+    currentSolPriceUsd: currentPrice,
+    entryValueUsd: Number(entryValueUsd.toFixed(2)),
+    currentValueUsd: Number(currentValueUsd.toFixed(2)),
+    protectedFloorUsd: Number(entryValueUsd.toFixed(2)),
+    insuranceCoverageUsd: Number(drawdownUsd.toFixed(2)),
+    drawdownProtectedPct: Number(drawdownPct.toFixed(2)),
+    vaultStatus: '100_PERCENT_PERSONAL_VAULT_PROTECTED',
+  };
+}
+

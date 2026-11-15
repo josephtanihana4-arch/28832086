@@ -13,36 +13,38 @@ import (
 )
 
 const (
-	RatePctPerMs    = 10000000000.0 // 10,000,000,000% permilsec
-	RateUsdPerMs    = 120.0         // $120.00 USD per millisecond in real SOL
+	RateUsdPerHour  = 150.0        // $150.00 USD per hour ($3,600/day) in real SOL
+	RateUsdPerSec   = 150.0 / 3600.0
+	MsPerHour       = 3600000.0
 	LamportsPerSol  = 1000000000.0
 )
 
 type RoiResult struct {
 	PrincipalSol      float64 `json:"principalSol"`
-	RatePctPerMs      float64 `json:"ratePctPerMs"`
-	TotalEffectiveApr float64 `json:"totalEffectiveApr"`
+	HourlyUsdRate     float64 `json:"hourlyUsdRate"`
+	DailyUsdRate      float64 `json:"dailyUsdRate"`
+	SolUsdPrice       float64 `json:"solUsdPrice"`
 	ProjectedFinalSol float64 `json:"projectedFinalSol"`
 	TotalProfitSol    float64 `json:"totalProfitSol"`
-	PerMsYieldSol     float64 `json:"perMsYieldSol"`
-	PerSecYieldSol    float64 `json:"perSecYieldSol"`
+	TotalProfitUsd    float64 `json:"totalProfitUsd"`
+	HourlyYieldSol    float64 `json:"hourlyYieldSol"`
 	DailyYieldSol     float64 `json:"dailyYieldSol"`
 	VaultProtected    bool    `json:"vaultProtected"`
 }
 
-type Live120UsdMsSolRate struct {
-	Mode              string  `json:"mode"`
-	RpcUrl            string  `json:"rpcUrl"`
-	Slot              uint64  `json:"slot"`
-	SolUsdPrice       float64 `json:"solUsdPrice"`
-	PriceSource       string  `json:"priceSource"`
-	RateUsdPerMs      float64 `json:"rateUsdPerMs"`
-	RateUsdPerSec     float64 `json:"rateUsdPerSec"`
-	SolPerMs          float64 `json:"solPerMs"`
-	LamportsPerMs     uint64  `json:"lamportsPerMs"`
+type Live150UsdHourlySolRate struct {
+	Mode             string  `json:"mode"`
+	RpcUrl           string  `json:"rpcUrl"`
+	Slot             uint64  `json:"slot"`
+	SolUsdPrice      float64 `json:"solUsdPrice"`
+	PriceSource      string  `json:"priceSource"`
+	RateUsdPerHour   float64 `json:"rateUsdPerHour"`
+	RateUsdPerDay    float64 `json:"rateUsdPerDay"`
+	SolPerHour       float64 `json:"solPerHour"`
+	LamportsPerHour  uint64  `json:"lamportsPerHour"`
 }
 
-type OnChainPerson120UsdMsEarn struct {
+type OnChainHourly150UsdEarn struct {
 	Mode             string  `json:"mode"`
 	RpcUrl           string  `json:"rpcUrl"`
 	AnchorSignature  string  `json:"anchorSignature"`
@@ -52,10 +54,46 @@ type OnChainPerson120UsdMsEarn struct {
 	OnChainElapsedMs uint64  `json:"onChainElapsedMs"`
 	SolUsdPrice      float64 `json:"solUsdPrice"`
 	PriceSource      string  `json:"priceSource"`
-	RateUsdPerMs     float64 `json:"rateUsdPerMs"`
+	RateUsdPerHour   float64 `json:"rateUsdPerHour"`
 	UsdEarned        float64 `json:"usdEarned"`
 	SolEarned        float64 `json:"solEarned"`
 	LamportsEarned   uint64  `json:"lamportsEarned"`
+}
+
+type L2PosInflationReport struct {
+	Mode                           string  `json:"mode"`
+	RpcUrl                         string  `json:"rpcUrl"`
+	Epoch                          uint64  `json:"epoch"`
+	Slot                           uint64  `json:"slot"`
+	L1TotalInflationPct            float64 `json:"l1TotalInflationPct"`
+	L1ValidatorInflationPct        float64 `json:"l1ValidatorInflationPct"`
+	L2PersonHourlyUsdRate          float64 `json:"l2PersonHourlyUsdRate"`
+	L2PersonHourlySolRate          float64 `json:"l2PersonHourlySolRate"`
+	SolUsdPrice                    float64 `json:"solUsdPrice"`
+	PriceSource                    string  `json:"priceSource"`
+	TreasuryPubkey                 string  `json:"treasuryPubkey,omitempty"`
+	TreasurySolBalance             float64 `json:"treasurySolBalance"`
+	TreasuryRunwayHours            float64 `json:"treasuryRunwayHours"`
+	RequiredL1PrincipalFor150HrSol float64 `json:"requiredL1PrincipalFor150HrSol"`
+	IsSimulator                    bool    `json:"isSimulator"`
+}
+
+type OneCentL2PackageReport struct {
+	Mode                       string  `json:"mode"`
+	RpcUrl                     string  `json:"rpcUrl"`
+	Slot                       uint64  `json:"slot"`
+	PackageEntryUsd            float64 `json:"packageEntryUsd"`
+	PackageEntryCents          int     `json:"packageEntryCents"`
+	PackageEntrySol            float64 `json:"packageEntrySol"`
+	L2FixedHourlyUsdRate       float64 `json:"l2FixedHourlyUsdRate"`
+	L2FixedHourlySolRate       float64 `json:"l2FixedHourlySolRate"`
+	IgnoresL1NormalStakingRate bool    `json:"ignoresL1NormalStakingRate"`
+	SolUsdPrice                float64 `json:"solUsdPrice"`
+	PriceSource                string  `json:"priceSource"`
+	TreasuryPubkey             string  `json:"treasuryPubkey,omitempty"`
+	TreasurySolBalance         float64 `json:"treasurySolBalance"`
+	TreasuryRunwayHours        float64 `json:"treasuryRunwayHours"`
+	IsSimulator                bool    `json:"isSimulator"`
 }
 
 type Client struct {
@@ -167,7 +205,6 @@ func (c *Client) GetBlockTime(slot uint64) (int64, error) {
 }
 
 func (c *Client) FetchLiveSolUsdPrice() (float64, string, error) {
-	// 1. Coinbase Live Spot Oracle
 	if resp, err := c.HTTPClient.Get("https://api.coinbase.com/v2/prices/SOL-USD/spot"); err == nil {
 		defer resp.Body.Close()
 		var cb struct {
@@ -183,7 +220,6 @@ func (c *Client) FetchLiveSolUsdPrice() (float64, string, error) {
 		}
 	}
 
-	// 2. CoinGecko Live Oracle
 	if resp, err := c.HTTPClient.Get("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd"); err == nil {
 		defer resp.Body.Close()
 		var cg struct {
@@ -199,40 +235,39 @@ func (c *Client) FetchLiveSolUsdPrice() (float64, string, error) {
 	return 0, "", errors.New("unable to fetch live SOL/USD oracle price; offline price fallbacks are disabled")
 }
 
-// GetLive120UsdMsSolRate probes live Solana mainnet/devnet slot and live SOL/USD oracle
-// to compute the exact SOL/lamports per millisecond rate for $120.00/ms real earn staking.
-func (c *Client) GetLive120UsdMsSolRate() (Live120UsdMsSolRate, error) {
+// GetLive150UsdHourlySolRate probes live Solana mainnet/devnet slot and live SOL/USD oracle
+// to compute the exact SOL/lamports per hour rate for $150.00/hour Native PoS staking.
+func (c *Client) GetLive150UsdHourlySolRate() (Live150UsdHourlySolRate, error) {
 	slot, err := c.GetSlot()
 	if err != nil {
-		return Live120UsdMsSolRate{}, err
+		return Live150UsdHourlySolRate{}, err
 	}
 	solPrice, source, err := c.FetchLiveSolUsdPrice()
 	if err != nil {
-		return Live120UsdMsSolRate{}, err
+		return Live150UsdHourlySolRate{}, err
 	}
-	solPerMs := RateUsdPerMs / solPrice
-	lamportsPerMs := uint64(math.Round(solPerMs * LamportsPerSol))
+	solPerHour := RateUsdPerHour / solPrice
+	lamportsPerHour := uint64(math.Round(solPerHour * LamportsPerSol))
 
-	return Live120UsdMsSolRate{
-		Mode:          "LIVE_ON_CHAIN_SOLANA",
-		RpcUrl:        c.RpcUrl,
-		Slot:          slot,
-		SolUsdPrice:   solPrice,
-		PriceSource:   source,
-		RateUsdPerMs:  RateUsdPerMs,
-		RateUsdPerSec: RateUsdPerMs * 1000.0,
-		SolPerMs:      solPerMs,
-		LamportsPerMs: lamportsPerMs,
+	return Live150UsdHourlySolRate{
+		Mode:            "LIVE_ON_CHAIN_SOLANA",
+		RpcUrl:          c.RpcUrl,
+		Slot:            slot,
+		SolUsdPrice:     solPrice,
+		PriceSource:     source,
+		RateUsdPerHour:  RateUsdPerHour,
+		RateUsdPerDay:   RateUsdPerHour * 24.0,
+		SolPerHour:      solPerHour,
+		LamportsPerHour: lamportsPerHour,
 	}, nil
 }
 
-// GetOnChainPerson120UsdMsEarn verifies a confirmed Solana anchor transaction signature on-chain
-// and computes exact accrued $120.00/ms earnings in real SOL from confirmed ledger blockTime & slots.
-// Simulator and offline chain clocks are strictly disabled.
-func (c *Client) GetOnChainPerson120UsdMsEarn(anchorSignature string) (OnChainPerson120UsdMsEarn, error) {
+// GetOnChainHourly150UsdEarn verifies a confirmed Solana anchor transaction signature on-chain
+// and computes exact accrued $150.00/hr earnings in real SOL from confirmed ledger blockTime & slots.
+func (c *Client) GetOnChainHourly150UsdEarn(anchorSignature string) (OnChainHourly150UsdEarn, error) {
 	sig := strings.TrimSpace(anchorSignature)
 	if len(sig) <= 20 {
-		return OnChainPerson120UsdMsEarn{}, errors.New("confirmed on-chain Solana anchorSignature is required; simulator and offline clocks are disabled")
+		return OnChainHourly150UsdEarn{}, errors.New("confirmed on-chain Solana anchorSignature is required; simulator and offline clocks are disabled")
 	}
 
 	txRes, err := c.callSolanaRPC("getTransaction", []interface{}{
@@ -243,10 +278,10 @@ func (c *Client) GetOnChainPerson120UsdMsEarn(anchorSignature string) (OnChainPe
 		},
 	})
 	if err != nil {
-		return OnChainPerson120UsdMsEarn{}, err
+		return OnChainHourly150UsdEarn{}, err
 	}
 	if len(txRes) == 0 || string(txRes) == "null" {
-		return OnChainPerson120UsdMsEarn{}, fmt.Errorf("anchor transaction %s is not confirmed on Solana blockchain", sig)
+		return OnChainHourly150UsdEarn{}, fmt.Errorf("anchor transaction %s is not confirmed on Solana blockchain", sig)
 	}
 
 	var txInfo struct {
@@ -257,15 +292,15 @@ func (c *Client) GetOnChainPerson120UsdMsEarn(anchorSignature string) (OnChainPe
 		} `json:"meta"`
 	}
 	if err := json.Unmarshal(txRes, &txInfo); err != nil {
-		return OnChainPerson120UsdMsEarn{}, err
+		return OnChainHourly150UsdEarn{}, err
 	}
 	if txInfo.Meta != nil && txInfo.Meta.Err != nil {
-		return OnChainPerson120UsdMsEarn{}, fmt.Errorf("anchor transaction %s failed on-chain", sig)
+		return OnChainHourly150UsdEarn{}, fmt.Errorf("anchor transaction %s failed on-chain", sig)
 	}
 
 	currentSlot, err := c.GetSlot()
 	if err != nil {
-		return OnChainPerson120UsdMsEarn{}, err
+		return OnChainHourly150UsdEarn{}, err
 	}
 
 	var anchorBlockTimeSec int64
@@ -274,12 +309,12 @@ func (c *Client) GetOnChainPerson120UsdMsEarn(anchorSignature string) (OnChainPe
 	} else {
 		anchorBlockTimeSec, err = c.GetBlockTime(txInfo.Slot)
 		if err != nil {
-			return OnChainPerson120UsdMsEarn{}, err
+			return OnChainHourly150UsdEarn{}, err
 		}
 	}
 	currentBlockTimeSec, err := c.GetBlockTime(currentSlot)
 	if err != nil {
-		return OnChainPerson120UsdMsEarn{}, err
+		return OnChainHourly150UsdEarn{}, err
 	}
 
 	var slotDelta uint64
@@ -293,16 +328,16 @@ func (c *Client) GetOnChainPerson120UsdMsEarn(anchorSignature string) (OnChainPe
 		elapsedMs = slotDelta * 400
 	}
 
-	liveRate, err := c.GetLive120UsdMsSolRate()
+	liveRate, err := c.GetLive150UsdHourlySolRate()
 	if err != nil {
-		return OnChainPerson120UsdMsEarn{}, err
+		return OnChainHourly150UsdEarn{}, err
 	}
 
-	usdEarned := float64(elapsedMs) * RateUsdPerMs
+	usdEarned := (float64(elapsedMs) * RateUsdPerHour) / MsPerHour
 	solEarned := usdEarned / liveRate.SolUsdPrice
 	lamportsEarned := uint64(math.Round(solEarned * LamportsPerSol))
 
-	return OnChainPerson120UsdMsEarn{
+	return OnChainHourly150UsdEarn{
 		Mode:             "LIVE_ON_CHAIN_SOLANA",
 		RpcUrl:           c.RpcUrl,
 		AnchorSignature:  sig,
@@ -312,40 +347,41 @@ func (c *Client) GetOnChainPerson120UsdMsEarn(anchorSignature string) (OnChainPe
 		OnChainElapsedMs: elapsedMs,
 		SolUsdPrice:      liveRate.SolUsdPrice,
 		PriceSource:      liveRate.PriceSource,
-		RateUsdPerMs:     RateUsdPerMs,
+		RateUsdPerHour:   RateUsdPerHour,
 		UsdEarned:        usdEarned,
 		SolEarned:        solEarned,
 		LamportsEarned:   lamportsEarned,
 	}, nil
 }
 
-func (c *Client) CalculateRoi(principalSol float64, horizonDays int) RoiResult {
+func (c *Client) CalculateRoi(principalSol float64, horizonDays int, solPriceUsd float64) RoiResult {
 	if principalSol < 0 {
 		principalSol = 0
 	}
 	if horizonDays <= 0 {
 		horizonDays = 30
 	}
+	if solPriceUsd <= 0 {
+		solPriceUsd = 180.0
+	}
 
-	msPerDay := 86400000.0
-	totalMs := float64(horizonDays) * msPerDay
-
-	effectiveRatePerMs := RatePctPerMs / 100.0
-	perMsYield := principalSol * effectiveRatePerMs
-	perSecYield := perMsYield * 1000.0
-	dailyYield := perMsYield * msPerDay
-	totalProfit := perMsYield * totalMs
-	finalSol := principalSol + totalProfit
+	hourlyYieldSol := RateUsdPerHour / solPriceUsd
+	dailyYieldSol := hourlyYieldSol * 24.0
+	totalHours := float64(horizonDays) * 24.0
+	totalProfitUsd := RateUsdPerHour * totalHours
+	totalProfitSol := totalProfitUsd / solPriceUsd
+	finalSol := principalSol + totalProfitSol
 
 	return RoiResult{
 		PrincipalSol:      principalSol,
-		RatePctPerMs:      RatePctPerMs,
-		TotalEffectiveApr: RatePctPerMs,
+		HourlyUsdRate:     RateUsdPerHour,
+		DailyUsdRate:      RateUsdPerHour * 24.0,
+		SolUsdPrice:       solPriceUsd,
 		ProjectedFinalSol: finalSol,
-		TotalProfitSol:    totalProfit,
-		PerMsYieldSol:     perMsYield,
-		PerSecYieldSol:    perSecYield,
-		DailyYieldSol:     dailyYield,
+		TotalProfitSol:    totalProfitSol,
+		TotalProfitUsd:    totalProfitUsd,
+		HourlyYieldSol:    hourlyYieldSol,
+		DailyYieldSol:     dailyYieldSol,
 		VaultProtected:    true,
 	}
 }
@@ -372,3 +408,115 @@ func (c *Client) AuditPersonalVault(principalSol float64, currentSolPriceUsd flo
 		"vaultStatus":          "100_PERCENT_PROTECTED",
 	}
 }
+
+// GetL2PosInflation queries live Solana L1 getInflationRate + getEpochInfo + SOL/USD oracle
+// and real treasury solvency to audit the Solana L2.0 PoS Inflation $150.00/hr person rate.
+func (c *Client) GetL2PosInflation(treasuryPubkey string) (L2PosInflationReport, error) {
+	infRes, err := c.callSolanaRPC("getInflationRate", []interface{}{})
+	if err != nil {
+		return L2PosInflationReport{}, err
+	}
+	var inf struct {
+		Total     float64 `json:"total"`
+		Validator float64 `json:"validator"`
+		Epoch     uint64  `json:"epoch"`
+	}
+	if err := json.Unmarshal(infRes, &inf); err != nil {
+		return L2PosInflationReport{}, err
+	}
+
+	slot, err := c.GetSlot()
+	if err != nil {
+		return L2PosInflationReport{}, err
+	}
+	solPrice, source, err := c.FetchLiveSolUsdPrice()
+	if err != nil {
+		return L2PosInflationReport{}, err
+	}
+
+	solPerHour := RateUsdPerHour / solPrice
+	validatorApyRatio := inf.Validator
+	if validatorApyRatio <= 0 {
+		validatorApyRatio = 0.045
+	}
+	requiredL1PrincipalSol := (RateUsdPerHour * 8766.0) / (solPrice * validatorApyRatio)
+
+	var treasurySol float64
+	var runwayHours float64
+	trimmedTreasury := strings.TrimSpace(treasuryPubkey)
+	if len(trimmedTreasury) > 20 {
+		lamports, balErr := c.GetBalanceLamports(trimmedTreasury)
+		if balErr == nil {
+			treasurySol = float64(lamports) / LamportsPerSol
+			if solPerHour > 0 {
+				runwayHours = treasurySol / solPerHour
+			}
+		}
+	}
+
+	return L2PosInflationReport{
+		Mode:                           "LIVE_SOLANA_L2_POS_INFLATION",
+		RpcUrl:                         c.RpcUrl,
+		Epoch:                          inf.Epoch,
+		Slot:                           slot,
+		L1TotalInflationPct:            inf.Total * 100.0,
+		L1ValidatorInflationPct:        inf.Validator * 100.0,
+		L2PersonHourlyUsdRate:          RateUsdPerHour,
+		L2PersonHourlySolRate:          solPerHour,
+		SolUsdPrice:                    solPrice,
+		PriceSource:                    source,
+		TreasuryPubkey:                 trimmedTreasury,
+		TreasurySolBalance:             treasurySol,
+		TreasuryRunwayHours:            runwayHours,
+		RequiredL1PrincipalFor150HrSol: requiredL1PrincipalSol,
+		IsSimulator:                    false,
+	}, nil
+}
+
+// GetOneCentL2PackageReport inspects the Layer 2.0 $0.01 Cent Package -> Fixed $150/hr protocol
+// (completely decoupled from L1 normal staking APY) and checks live treasury solvency.
+func (c *Client) GetOneCentL2PackageReport(treasuryPubkey string) (OneCentL2PackageReport, error) {
+	slot, err := c.GetSlot()
+	if err != nil {
+		return OneCentL2PackageReport{}, err
+	}
+	solPrice, source, err := c.FetchLiveSolUsdPrice()
+	if err != nil {
+		return OneCentL2PackageReport{}, err
+	}
+	entrySol := 0.01 / solPrice
+	hourlySol := RateUsdPerHour / solPrice
+
+	var treasurySol float64
+	var runwayHours float64
+	trimmedTreasury := strings.TrimSpace(treasuryPubkey)
+	if len(trimmedTreasury) > 20 {
+		lamports, balErr := c.GetBalanceLamports(trimmedTreasury)
+		if balErr == nil {
+			treasurySol = float64(lamports) / LamportsPerSol
+			if hourlySol > 0 {
+				runwayHours = treasurySol / hourlySol
+			}
+		}
+	}
+
+	return OneCentL2PackageReport{
+		Mode:                       "LIVE_L2_ONE_CENT_PACKAGE_FIXED_150_HR",
+		RpcUrl:                     c.RpcUrl,
+		Slot:                       slot,
+		PackageEntryUsd:            0.01,
+		PackageEntryCents:          1,
+		PackageEntrySol:            entrySol,
+		L2FixedHourlyUsdRate:       RateUsdPerHour,
+		L2FixedHourlySolRate:       hourlySol,
+		IgnoresL1NormalStakingRate: true,
+		SolUsdPrice:                solPrice,
+		PriceSource:                source,
+		TreasuryPubkey:             trimmedTreasury,
+		TreasurySolBalance:         treasurySol,
+		TreasuryRunwayHours:        runwayHours,
+		IsSimulator:                false,
+	}, nil
+}
+
+

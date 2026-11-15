@@ -93,8 +93,8 @@ export function PackageStudio({ cluster, customRpcUrl, draft }: PackageStudioPro
           <p className="text-sm text-slate-400">
             Production-ready npm package (<span className="font-mono text-slate-200">{draft.packageName}</span>)
             pre-wired to <span className="font-mono text-slate-200">{cluster}</span> for creating
-            your own isolated SPL Stake Pool, calculating Native PoS APR/APY, and running the
-            standalone Anchor ROI vault program.
+            your own isolated SPL Stake Pool, calculating the Native PoS $150.00/hr rate, and
+            running the standalone Anchor ROI vault program.
           </p>
         </div>
 

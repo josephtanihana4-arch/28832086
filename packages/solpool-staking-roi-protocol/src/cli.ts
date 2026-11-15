@@ -41,7 +41,7 @@ program
 
 program
   .command('status')
-  .description('Fetch live Solana Mainnet-Beta Proof-of-Stake epoch, inflation, and 1,000,000% permilsec APR')
+  .description('Fetch live Solana Mainnet-Beta Proof-of-Stake epoch, inflation, and $150.00/hr Native PoS rate')
   .option('-c, --cluster <cluster>', 'Solana cluster (mainnet-beta | devnet)', PROTOCOL_DEFAULTS.cluster)
   .option('-r, --rpc <url>', 'Custom Solana RPC endpoint')
   .action(async (opts) => {
@@ -52,12 +52,12 @@ program
 
 program
   .command('calc-roi')
-  .description('Calculate live Native Proof-of-Stake APR (1,000,000% permilsec) & protocol ROI from Solana RPC')
+  .description('Calculate live Native Proof-of-Stake $ Rate ($150.00/hr) & protocol ROI from Solana RPC')
   .option('-p, --principal <sol>', 'SOL principal', '100')
   .option('-d, --days <days>', 'Horizon in days', '365')
   .option('-v, --commission <pct>', 'Validator commission %', '5')
   .option('-f, --fee <pct>', 'Pool epoch management fee %', String(PROTOCOL_DEFAULTS.epochFeeBps / 100))
-  .option('-b, --boost <pct>', 'Protocol boost APR %', String(PROTOCOL_DEFAULTS.protocolBoostAprPct))
+  .option('-b, --boost <usdHr>', 'Protocol boost USD/hr', '0')
   .option('-c, --cluster <cluster>', 'Solana cluster', 'mainnet-beta')
   .option('-r, --rpc <url>', 'Custom Solana RPC endpoint')
   .action(async (opts) => {
@@ -65,10 +65,11 @@ program
     const net = await sdk.getNetworkPosMetrics();
     const roi = calculateNativePosRoi({
       principalSol: Number(opts.principal),
-      baseNetworkAprPct: net.baseNetworkAprPct,
+      hourlyUsdRate: net.hourlyUsdRate,
       validatorCommissionPct: Number(opts.commission),
       poolManagementFeePct: Number(opts.fee),
-      protocolBoostAprPct: Number(opts.boost),
+      protocolBoostUsdPerHour: Number(opts.boost),
+      solPriceUsd: net.solUsdPrice,
       horizonDays: Number(opts.days),
       epochsPerYear: net.epochsPerYear,
     });
@@ -162,9 +163,9 @@ program
 
 program
   .command('stream-yield')
-  .description('100% On-Chain: anchor Solana slot/clock and claim per-millisecond native SOL or SPL yield')
+  .description('100% On-Chain: anchor Solana slot/clock and claim $150.00/hr native SOL or SPL yield')
   .option('-p, --principal <sol>', 'Protected principal in SOL', '100')
-  .option('-a, --apr <pct>', 'Optional APR % override (defaults to live Solana Native PoS Base APR 1,000,000% permilsec)', '1000000')
+  .option('--rate-usd-hr <usd>', 'Native PoS USD/hr rate (defaults to $150.00/hr)', '150')
   .option('--anchor-sig <sig>', 'Confirmed on-chain Solana anchor tx signature to compute exact ledger elapsed ms')
   .option('--anchor-now', 'Write and confirm a new on-chain Memo anchor transaction right now', false)
   .option('-c, --cluster <cluster>', 'Solana cluster', PROTOCOL_DEFAULTS.cluster)
@@ -177,9 +178,9 @@ program
     const {
       anchorOnChainStreamClock,
       getOnChainElapsedSinceTx,
-      getLiveBlockchainMillisecondRate,
-      claimMillisecondSolFromTreasury,
-      settleMillisecondSplYieldOnChain,
+      getLiveBlockchainHourlyRate,
+      claimHourlySolFromTreasury,
+      settleHourlySplYieldOnChain,
     } = await import('./guardian.js');
     const rpcUrl = getRpcUrl(opts.cluster, opts.rpc);
 
@@ -200,9 +201,9 @@ program
       );
     }
 
-    const aprOverride = opts.apr !== undefined ? Number(opts.apr) : undefined;
+    const rateOverride = opts.rateUsdHr !== undefined ? Number(opts.rateUsdHr) : 150;
     const [rate, clockDelta] = await Promise.all([
-      getLiveBlockchainMillisecondRate(rpcUrl, Number(opts.principal), aprOverride),
+      getLiveBlockchainHourlyRate(rpcUrl, Number(opts.principal), rateOverride),
       getOnChainElapsedSinceTx(rpcUrl, anchorSig),
     ]);
     console.log('Verified On-Chain Anchor Clock:', clockDelta);
@@ -214,32 +215,30 @@ program
         const stakerPubkey = opts.recipient
           ? new PublicKey(opts.recipient)
           : treasurySigner.publicKey;
-        const settled = await claimMillisecondSolFromTreasury({
+        const settled = await claimHourlySolFromTreasury({
           rpcUrl,
           treasurySigner,
           stakerPubkey,
-          principalSol: Number(opts.principal),
-          aprPct: rate.aprPct,
+          hourlyUsdRate: rate.hourlyUsdRate,
           anchorSignature: anchorSig,
         });
-        console.log('On-Chain Native SOL Millisecond Yield Settled:', settled);
+        console.log('On-Chain Native SOL $150/hr Yield Settled:', settled);
       } else {
         const signer = loadKeypair(opts.keypair);
-        const settled = await settleMillisecondSplYieldOnChain({
+        const settled = await settleHourlySplYieldOnChain({
           rpcUrl,
           signer,
-          principalSol: Number(opts.principal),
-          aprPct: rate.aprPct,
+          hourlyUsdRate: rate.hourlyUsdRate,
           anchorSignature: anchorSig,
         });
-        console.log('On-Chain SPL Millisecond Yield Settled:', settled);
+        console.log('On-Chain SPL $150/hr Yield Settled:', settled);
       }
     }
   });
 
 program
   .command('usd-stream')
-  .description('100% On-Chain $120.00 per millisecond reward streamer backed by funded SOL or USDC treasury')
+  .description('100% On-Chain $150.00 per hour reward streamer backed by funded SOL or USDC treasury')
   .option('-c, --cluster <cluster>', 'Solana cluster', PROTOCOL_DEFAULTS.cluster)
   .option('-r, --rpc <url>', 'Custom Solana RPC endpoint')
   .option('-a, --asset <asset>', 'Settlement asset (sol | usdc)', 'usdc')
@@ -247,16 +246,16 @@ program
   .option('--anchor-now', 'Write and confirm a new on-chain Memo anchor transaction right now', false)
   .option('-k, --keypair <path>', 'Signer keypair JSON path when using --anchor-now')
   .option('--usdc-mint <pubkey>', 'Optional custom USDC/USD SPL mint pubkey')
-  .option('--settle', 'Sign and execute live $120/ms treasury transfer on-chain', false)
+  .option('--settle', 'Sign and execute live $150/hr treasury transfer on-chain', false)
   .option('--treasury-keypair <path>', 'Funded SOL or USDC Treasury keypair JSON path')
   .option('--recipient <pubkey>', 'Recipient pubkey (defaults to treasury pubkey)')
   .action(async (opts) => {
     const {
       anchorOnChainStreamClock,
       getOnChainElapsedSinceTx,
-      getCentMsLiveRate,
-      claimCentMsSolFromTreasury,
-      claimCentMsUsdcFromTreasury,
+      getHourlyUsdLiveRate,
+      claimHourlyUsdSolFromTreasury,
+      claimHourlyUsdUsdcFromTreasury,
     } = await import('./guardian.js');
     const rpcUrl = getRpcUrl(opts.cluster, opts.rpc);
 
@@ -278,7 +277,7 @@ program
     }
 
     const [rate, clockDelta] = await Promise.all([
-      getCentMsLiveRate(rpcUrl),
+      getHourlyUsdLiveRate(rpcUrl),
       getOnChainElapsedSinceTx(rpcUrl, anchorSig),
     ]);
     console.table(rate);
@@ -290,38 +289,38 @@ program
         ? new PublicKey(opts.recipient)
         : treasurySigner.publicKey;
       if (opts.asset === 'sol') {
-        const res = await claimCentMsSolFromTreasury({
+        const res = await claimHourlyUsdSolFromTreasury({
           rpcUrl,
           treasurySigner,
           stakerPubkey,
           anchorSignature: anchorSig,
         });
-        console.log('$120/ms Native SOL Settled On-Chain:', res);
+        console.log('$150/hr Native SOL Settled On-Chain:', res);
       } else {
-        const res = await claimCentMsUsdcFromTreasury({
+        const res = await claimHourlyUsdUsdcFromTreasury({
           rpcUrl,
           treasurySigner,
           stakerPubkey,
           usdcMint: opts.usdcMint ? new PublicKey(opts.usdcMint) : undefined,
           anchorSignature: anchorSig,
         });
-        console.log('$120/ms USDC Settled On-Chain:', res);
+        console.log('$150/hr USDC Settled On-Chain:', res);
       }
     }
   });
 
 program
-  .command('person-earn-120')
-  .description('100% On-Chain Titanium Staking: person earns $120.00/ms in real Solana (SOL) backed by live blockchain clock & oracle')
+  .command('hourly-earn-150')
+  .description('100% On-Chain Titanium Staking: earn $150.00/hr in real Solana (SOL) backed by live blockchain clock & oracle')
   .option('-c, --cluster <cluster>', 'Solana cluster (mainnet-beta | mainnet-2 | devnet | testnet)', 'mainnet-beta')
   .option('-r, --rpc <url>', 'Custom Solana RPC endpoint')
-  .option('-p, --principal <sol>', 'Person staked SOL principal (0.000000001 to unlimited)', '100')
+  .option('-p, --principal <sol>', 'Staked SOL principal (0.000000001 to unlimited)', '100')
   .option('--anchor-sig <sig>', 'Confirmed on-chain Solana anchor tx signature')
   .option('--anchor-now', 'Write and confirm a new on-chain Memo anchor transaction right now', false)
   .option('-k, --keypair <path>', 'Signer keypair JSON path when using --anchor-now')
-  .option('--settle', 'Sign and execute live $120/ms payout in real SOL on-chain', false)
+  .option('--settle', 'Sign and execute live $150/hr payout in real SOL on-chain', false)
   .option('--treasury-keypair <path>', 'Funded SOL Treasury keypair JSON path')
-  .option('--recipient <pubkey>', 'Person wallet pubkey to receive SOL (defaults to treasury pubkey)')
+  .option('--recipient <pubkey>', 'Wallet pubkey to receive SOL (defaults to treasury pubkey)')
   .action(async (opts) => {
     const rpcUrl = getRpcUrl(opts.cluster, opts.rpc);
     const sdk = new TitaniumStakingProtocol(rpcUrl);
@@ -329,8 +328,8 @@ program
     let anchorSig = opts.anchorSig as string | undefined;
     if (opts.anchorNow) {
       const signer = loadKeypair(opts.keypair || opts.treasuryKeypair);
-      const anchored = await sdk.anchorPerson120UsdMsEarn(signer, Number(opts.principal));
-      console.log('Anchored On-Chain $120/ms SOL Earn Stream:', anchored);
+      const anchored = await sdk.anchorHourlyUsdEarn(signer, Number(opts.principal));
+      console.log('Anchored On-Chain $150/hr SOL Earn Stream:', anchored);
       anchorSig = anchored.anchorSignature;
       if (!opts.settle) {
         return;
@@ -343,8 +342,8 @@ program
       );
     }
 
-    const earnStatus = await sdk.getPerson120UsdMsOnChainEarn(anchorSig);
-    console.log('LIVE ON-CHAIN $120/MS IN SOLANA EARN STATUS:');
+    const earnStatus = await sdk.getHourlyUsdOnChainEarn(anchorSig);
+    console.log('LIVE ON-CHAIN $150/HR IN SOLANA EARN STATUS:');
     console.table(earnStatus);
 
     if (opts.settle) {
@@ -352,18 +351,18 @@ program
       const stakerPubkey = opts.recipient
         ? new PublicKey(opts.recipient)
         : treasurySigner.publicKey;
-      const settled = await sdk.claimPerson120UsdMsInSol(treasurySigner, stakerPubkey, anchorSig);
-      console.log('Confirmed On-Chain $120/ms Real SOL Payout:', settled);
+      const settled = await sdk.claimHourlyUsdInSol(treasurySigner, stakerPubkey, anchorSig);
+      console.log('Confirmed On-Chain $150/hr Real SOL Payout:', settled);
     }
   });
 
 program
   .command('stream-pos')
-  .description('100% On-Chain Solana: read confirmed ledger anchor clock and compute 1,000,000% permilsec Native PoS yield')
+  .description('100% On-Chain Solana: read confirmed ledger anchor clock and compute $150.00/hr Native PoS yield')
   .option('-c, --cluster <cluster>', 'Solana cluster', PROTOCOL_DEFAULTS.cluster)
   .option('-r, --rpc <url>', 'Custom Solana RPC endpoint')
   .option('-p, --principal <sol>', 'Principal in SOL', '100')
-  .option('-a, --apr <pct>', 'Native PoS APR % permilsec', '1000000')
+  .option('--rate-usd-hr <usd>', 'Native PoS $ rate per hour', '150')
   .option('--anchor-sig <sig>', 'Confirmed on-chain Solana anchor tx signature')
   .option('--anchor-now', 'Write and confirm a new on-chain Memo anchor transaction right now', false)
   .option('-k, --keypair <path>', 'Signer keypair JSON path when using --anchor-now')
@@ -371,9 +370,9 @@ program
     const {
       anchorOnChainStreamClock,
       getOnChainElapsedSinceTx,
-      getLiveBlockchainMillisecondRate,
+      getLiveBlockchainHourlyRate,
     } = await import('./guardian.js');
-    const { calculateOnChainPerMsPos } = await import('./roi.js');
+    const { calculateOnChainHourlyUsdPos } = await import('./roi.js');
     const rpcUrl = getRpcUrl(opts.cluster, opts.rpc);
 
     let anchorSig = opts.anchorSig as string | undefined;
@@ -391,19 +390,20 @@ program
     }
 
     const [rate, clockDelta] = await Promise.all([
-      getLiveBlockchainMillisecondRate(rpcUrl, Number(opts.principal), Number(opts.apr)),
+      getLiveBlockchainHourlyRate(rpcUrl, Number(opts.principal), Number(opts.rateUsdHr)),
       getOnChainElapsedSinceTx(rpcUrl, anchorSig),
     ]);
 
-    const stream = calculateOnChainPerMsPos({
+    const stream = calculateOnChainHourlyUsdPos({
       principalSol: Number(opts.principal),
-      ratePctPerMs: rate.aprPct,
+      hourlyUsdRate: rate.hourlyUsdRate,
+      solUsdPrice: rate.solUsdPrice,
       anchorSignature: clockDelta.anchorSignature,
       anchorSlot: clockDelta.anchorSlot,
       currentSlot: clockDelta.currentSlot,
       verifiedOnChainElapsedMs: clockDelta.onChainElapsedMs,
     });
-    console.log('LIVE 100% ON-CHAIN SOLANA NATIVE POS (1,000,000% PERMILSEC):');
+    console.log('LIVE 100% ON-CHAIN SOLANA NATIVE POS ($150.00 / HR):');
     console.table(stream);
   });
 
@@ -532,7 +532,7 @@ program
 
 program
   .command('withdrawal-pool')
-  .description('Inspect live on-chain Withdrawal Pool metrics, reserve liquidity, and 1,000,000% permilsec Native PoS APR')
+  .description('Inspect live on-chain Withdrawal Pool metrics, reserve liquidity, and $150.00/hr Native PoS rate')
   .argument('<stakePoolAddress>', 'Stake Pool public key')
   .option('-c, --cluster <cluster>', 'Solana cluster', PROTOCOL_DEFAULTS.cluster)
   .option('-r, --rpc <url>', 'Custom Solana RPC endpoint')
@@ -548,9 +548,9 @@ program
       instantSolWithdrawCapacity: info.instantSolWithdrawCapacity,
       totalPoolSol: info.totalPoolSol,
       lstExchangeRate: info.lstExchangeRate,
-      nativePosApr: info.nativePosAprLabel,
-      perMillisecondSolPer100Sol: info.perMillisecondSolPer100Sol,
-      perDaySolPer100Sol: info.perDaySolPer100Sol,
+      nativePosRate: info.nativePosRateLabel,
+      perHourSolEquivalent: info.perHourSolEquivalent,
+      perDaySolEquivalent: info.perDaySolEquivalent,
     });
   });
 
@@ -592,4 +592,111 @@ program
     console.log('Confirmed On-Chain Stake Account Withdrawal from Pool:', res);
   });
 
+program
+  .command('l2-inflation')
+  .description('Inspect or settle Solana L2.0 Proof-of-Stake Inflation ($150.00/hr person rate, 100% live RPC)')
+  .option('-c, --cluster <cluster>', 'Solana cluster (mainnet-beta | mainnet-2 | devnet | testnet)', PROTOCOL_DEFAULTS.cluster)
+  .option('-r, --rpc <url>', 'Custom Solana RPC endpoint')
+  .option('--person <pubkey>', 'Person wallet public key')
+  .option('--treasury <pubkey>', 'Funded L2 SOL Treasury public key')
+  .option('--anchor-now', 'Anchor Solana L2.0 PoS Inflation checkpoint on-chain right now', false)
+  .option('--anchor-sig <sig>', 'Confirmed Solana L2.0 anchor tx signature')
+  .option('--settle-sol', 'Pay out verified $150/hr L2.0 inflation in real SOL from funded treasury', false)
+  .option('--mint-l2-token', 'Mint verified SPL L2.0 Inflation receipt token on-chain', false)
+  .option('--treasury-keypair <path>', 'Funded SOL Treasury keypair JSON path')
+  .option('-k, --keypair <path>', 'Person signer keypair JSON path')
+  .action(async (opts) => {
+    const rpcUrl = getRpcUrl(opts.cluster, opts.rpc);
+    const sdk = new SolanaStakingRoiProtocol(rpcUrl);
+
+    let anchorSig = opts.anchorSig as string | undefined;
+    if (opts.anchorNow) {
+      const signer = loadKeypair(opts.keypair || opts.treasuryKeypair);
+      const pre = await sdk.getL2InflationStatus({ personWallet: signer.publicKey });
+      const anchored = await sdk.anchorL2Inflation(signer, pre.personDelegatedStakeSol);
+      console.log('Anchored Solana L2.0 PoS Inflation on L1:', anchored);
+      anchorSig = anchored.anchorSignature;
+      if (!opts.settleSol && !opts.mintL2Token) {
+        return;
+      }
+    }
+
+    const report = await sdk.getL2InflationStatus({
+      personWallet: opts.person,
+      treasuryPubkey: opts.treasury,
+      anchorSignature: anchorSig,
+    });
+    console.log('SOLANA L2.0 PROOF-OF-STAKE INFLATION (100% LIVE RPC, ZERO SIMULATOR):');
+    console.table(report);
+
+    if (opts.settleSol) {
+      if (!anchorSig) throw new Error('--anchor-sig <sig> or --anchor-now is required to settle');
+      const treasurySigner = loadKeypair(opts.treasuryKeypair);
+      const personKey = opts.person ? new PublicKey(opts.person) : treasurySigner.publicKey;
+      const paid = await sdk.claimL2InflationInSol(treasurySigner, personKey, anchorSig);
+      console.log('Confirmed On-Chain L2.0 $150/hr SOL Settlement:', paid);
+    }
+
+    if (opts.mintL2Token) {
+      if (!anchorSig) throw new Error('--anchor-sig <sig> or --anchor-now is required to mint');
+      const signer = loadKeypair(opts.keypair || opts.treasuryKeypair);
+      const minted = await sdk.mintL2InflationToken(signer, anchorSig);
+      console.log('Confirmed On-Chain L2.0 Inflation SPL Token Mint:', minted);
+    }
+  });
+
+program
+  .command('l2-package')
+  .description('Layer 2.0 $0.01 Cent Package -> Fixed $150.00/hr Protocol (ignores L1 staking rates, zero simulator)')
+  .option('-c, --cluster <cluster>', 'Solana cluster (mainnet-beta | mainnet-2 | devnet | testnet)', PROTOCOL_DEFAULTS.cluster)
+  .option('-r, --rpc <url>', 'Custom Solana RPC endpoint')
+  .option('--person <pubkey>', 'Person wallet public key')
+  .option('--treasury <pubkey>', 'Funded L2 Treasury public key')
+  .option('--activate-now', 'Send real $0.01 SOL package activation transaction on Solana now', false)
+  .option('--activate-sig <sig>', 'Confirmed $0.01 package activation transaction signature')
+  .option('--settle-sol', 'Pay out verified $150/hr L2.0 earnings in real SOL from funded treasury', false)
+  .option('--mint-l2-token', 'Mint L2.0 Fixed-Rate SPL receipt token on-chain', false)
+  .option('--treasury-keypair <path>', 'Funded SOL Treasury keypair JSON path')
+  .option('-k, --keypair <path>', 'Person signer keypair JSON path')
+  .action(async (opts) => {
+    const rpcUrl = getRpcUrl(opts.cluster, opts.rpc);
+    const sdk = new SolanaStakingRoiProtocol(rpcUrl);
+
+    let activationSig = opts.activateSig as string | undefined;
+    if (opts.activateNow) {
+      const signer = loadKeypair(opts.keypair || opts.treasuryKeypair);
+      const activated = await sdk.activateOneCentL2Package(signer, opts.treasury);
+      console.log('Activated On-Chain $0.01 Cent L2.0 Package ($150/hr fixed):', activated);
+      activationSig = activated.packageActivationSig;
+      if (!opts.settleSol && !opts.mintL2Token) {
+        return;
+      }
+    }
+
+    const report = await sdk.getOneCentL2PackageStatus({
+      personWallet: opts.person,
+      treasuryPubkey: opts.treasury,
+      packageActivationSig: activationSig,
+    });
+    console.log('LAYER 2.0 $0.01 CENT PACKAGE ($150.00/HR FIXED, IGNORES L1 RATES):');
+    console.table(report);
+
+    if (opts.settleSol) {
+      if (!activationSig) throw new Error('--activate-sig <sig> or --activate-now is required to settle');
+      const treasurySigner = loadKeypair(opts.treasuryKeypair);
+      const personKey = opts.person ? new PublicKey(opts.person) : treasurySigner.publicKey;
+      const paid = await sdk.claimOneCentL2InSol(treasurySigner, personKey, activationSig);
+      console.log('Confirmed On-Chain $0.01 Package $150/hr SOL Payout:', paid);
+    }
+
+    if (opts.mintL2Token) {
+      if (!activationSig) throw new Error('--activate-sig <sig> or --activate-now is required to mint');
+      const signer = loadKeypair(opts.keypair || opts.treasuryKeypair);
+      const minted = await sdk.mintOneCentL2ReceiptToken(signer, activationSig);
+      console.log('Confirmed On-Chain $0.01 Package SPL Token Mint:', minted);
+    }
+  });
+
 program.parseAsync(process.argv);
+
+

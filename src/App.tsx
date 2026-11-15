@@ -10,9 +10,11 @@ import {
   Package,
   ShieldAlert,
   ShieldCheck,
+  TrendingUp,
   Wallet,
   X,
 } from 'lucide-react';
+import { L2InflationProtocol } from './components/L2InflationProtocol';
 import { MainnetOverview } from './components/MainnetOverview';
 import { PackageStudio } from './components/PackageStudio';
 import { PoolRegistry } from './components/PoolRegistry';
@@ -25,13 +27,14 @@ import { DeveloperIncomeAgent } from './components/DeveloperIncomeAgent';
 import type { NetworkOverview, ProtocolConfig, SolanaCluster } from './types';
 import { type SolanaWalletProvider, detectSolanaProvider } from './utils/solanaWallet';
 
-type WorkspaceTab = 'overview' | 'roi' | 'builder' | 'protection' | 'poh' | 'rpc' | 'registry' | 'package' | 'agent';
+type WorkspaceTab = 'overview' | 'roi' | 'builder' | 'protection' | 'l2-inflation' | 'poh' | 'rpc' | 'registry' | 'package' | 'agent';
 
 const TAB_TITLES: Record<WorkspaceTab, string> = {
   overview: 'Mainnet Overview',
-  roi: 'ROI & APR Engine',
+  roi: 'ROI & Hourly Rate Engine',
   builder: 'Protocol Builder',
   protection: 'Principal Guard & Stream',
+  'l2-inflation': 'Solana L2.0 PoS Inflation',
   poh: 'Staking Proof of History',
   rpc: 'RPC & Developer Links',
   registry: 'Withdrawal Pool & Staking Registry',
@@ -68,7 +71,7 @@ export default function App() {
     solDepositFeeBps: 0,
     solWithdrawalFeeBps: 10,
     referralFeePct: 0,
-    protocolBoostAprPct: 1.25,
+    protocolBoostAprPct: 0,
     initialReserveSol: 0.05,
     selectedValidators: [],
     managerPubkey: '',
@@ -176,9 +179,10 @@ export default function App() {
     icon: typeof Activity;
   }> = [
     { id: 'overview', label: 'Mainnet Overview', icon: Activity },
-    { id: 'roi', label: 'ROI & APR Engine', icon: Calculator },
+    { id: 'roi', label: 'ROI & Hourly Engine', icon: Calculator },
     { id: 'builder', label: 'Protocol Builder', icon: Layers },
     { id: 'protection', label: 'Protection & Stream', icon: ShieldAlert },
+    { id: 'l2-inflation', label: 'Solana L2.0 Inflation', icon: TrendingUp },
     { id: 'poh', label: 'Proof of History', icon: History },
     { id: 'rpc', label: 'RPC & Dev Links', icon: Link2 },
     { id: 'registry', label: 'Withdrawal & Staking', icon: ShieldCheck },
@@ -288,8 +292,8 @@ export default function App() {
                 <span className="text-slate-200">{network.epoch}</span>
               </div>
               <div className="flex justify-between">
-                <span>Native PoS APR</span>
-                <span className="text-emerald-400 font-semibold">{network.baseNetworkAprPct.toLocaleString()}%/ms</span>
+                <span>Native PoS $ Rate</span>
+                <span className="text-emerald-400 font-semibold">{network.nativePosRateLabel}</span>
               </div>
               <div className="flex justify-between">
                 <span>Selected Validators</span>
@@ -416,12 +420,12 @@ export default function App() {
               customRpcUrl={customRpcUrl}
               network={network}
               defaultEpochFeePct={draft.epochFeeBps / 100}
-              defaultBoostAprPct={draft.protocolBoostAprPct}
-              onSyncToProtocol={({ epochFeeBps, protocolBoostAprPct }) => {
+              defaultBoostUsdPerHour={draft.protocolBoostAprPct}
+              onSyncToProtocol={({ epochFeeBps, protocolBoostUsdPerHour }) => {
                 setDraft((prev) => ({
                   ...prev,
                   epochFeeBps,
-                  protocolBoostAprPct,
+                  protocolBoostAprPct: protocolBoostUsdPerHour,
                 }));
                 selectTab('builder');
               }}
@@ -456,6 +460,16 @@ export default function App() {
                 setPohTargetAddress(addr);
                 selectTab('poh');
               }}
+            />
+          )}
+
+          {activeTab === 'l2-inflation' && (
+            <L2InflationProtocol
+              cluster={cluster}
+              customRpcUrl={customRpcUrl}
+              walletPubkey={walletPubkey}
+              walletProvider={walletProvider}
+              onConnectWallet={handleConnectWallet}
             />
           )}
 

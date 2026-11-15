@@ -8,8 +8,9 @@ export interface ValidatorSummary {
   lastVote: number;
   epochCredits: number;
   delinquent: boolean;
-  estimatedNetAprPct: number;
-  estimatedNetApyPct: number;
+  estimatedNetHourlyUsd: number;
+  estimatedNetDailyUsd: number;
+  estimatedNetHourlySol: number;
 }
 
 export interface NetworkOverview {
@@ -30,8 +31,12 @@ export interface NetworkOverview {
   circulatingSupplySol: number;
   totalActivatedStakeSol: number;
   stakeParticipationPct: number;
-  baseNetworkAprPct: number;
-  baseNetworkApyPct: number;
+  solUsdPrice: number;
+  hourlyUsdRate: number;
+  dailyUsdRate: number;
+  yearlyUsdRate: number;
+  hourlySolEquivalent: number;
+  nativePosRateLabel: string;
   activeValidatorCount: number;
   delinquentValidatorCount: number;
   validators: ValidatorSummary[];
@@ -91,17 +96,19 @@ export interface RoiProjectionPoint {
 }
 
 export interface RoiCalculationResult {
-  grossPosAprPct: number;
-  netPosAprPct: number;
-  protocolBoostAprPct: number;
-  totalEffectiveAprPct: number;
-  effectiveApyPct: number;
+  grossHourlyUsdRate: number;
+  netHourlyUsdRate: number;
+  protocolBoostUsdPerHour: number;
+  totalEffectiveHourlyUsdRate: number;
+  dailyYieldUsd: number;
   projectedFinalSol: number;
   totalProfitSol: number;
+  totalProfitUsd: number;
   totalRoiPct: number;
   projectedFinalUsd: number;
   perMsYieldSol: number;
   perSecYieldSol: number;
+  hourlyYieldSol: number;
   dailyYieldSol: number;
   epochYieldSol: number;
   lstAppreciation1Yr: number;
@@ -128,6 +135,7 @@ export interface ProtocolConfig {
   stakeWithdrawalFeeBps: number;
   referralFeePct: number;
   protocolBoostAprPct: number;
+  hourlyUsdRate?: number;
   initialReserveSol: number;
   selectedValidators: string[];
   stakePoolAddress?: string;
@@ -224,15 +232,17 @@ export interface MillisecondChainYieldSnapshot {
   slotDelta?: number;
   onChainElapsedMs?: number;
   principalSol: number;
-  aprPct: number;
-  perMillisecondTokens: string;
-  perMillisecondSolExact: string;
+  solUsdPrice: number;
+  priceSource: string;
+  hourlyUsdRate: number;
+  perHourTokens: string;
+  perHourSolExact: string;
   perSecondTokens: string;
   perSecondLamports: string;
   perDaySol: string;
   perEpochTokens: string;
   perYearTokens: string;
-  nativePosAprPct: number;
+  nativePosRateLabel: string;
 }
 
 export interface CentMillisecondStreamSnapshot {
@@ -246,25 +256,26 @@ export interface CentMillisecondStreamSnapshot {
   onChainElapsedMs?: number;
   solUsdPrice: number;
   priceSource: string;
-  rateCentPerMs: number;
-  rateUsdPerMs: number;
+  rateUsdPerHour: number;
+  rateCentPerHour: number;
   rateUsdPerSec: number;
+  rateUsdPerMs: number;
   rateUsdPerDay: number;
   rateUsdPerYear: number;
-  lamportsPerMsAtLivePrice: number;
+  lamportsPerHourAtLivePrice: number;
   lamportsPerSecAtLivePrice: number;
-  microUsdcPerMs: number;
+  lamportsPerMsAtLivePrice: number;
+  microUsdcPerHour: number;
   microUsdcPerSec: number;
-  nativePosAprPct: number;
-  requiredSolPrincipalForNativePos001CentMs: number;
+  nativePosRateLabel: string;
   treasuryPubkey: string | null;
   treasurySolBalance: number | null;
+  treasurySolRunwayHours: number | null;
   treasurySolRunwaySeconds: number | null;
-  treasurySolRunwayMs: number | null;
   usdcMint: string;
   treasuryUsdcBalance: number | null;
+  treasuryUsdcRunwayHours: number | null;
   treasuryUsdcRunwaySeconds: number | null;
-  treasuryUsdcRunwayMs: number | null;
 }
 
 export interface PohBlockLink {
@@ -350,7 +361,7 @@ export interface DeveloperRpcLinksResponse {
     sysvarStakeHistory: string;
     sysvarSlotHashes: string;
     packageName: string;
-    nativePosAprLabel: string;
+    nativePosRateLabel: string;
   };
   probes: SolanaRpcProbeResult[];
   fetchedAt: string;
@@ -407,15 +418,17 @@ export interface WithdrawalPoolOverview {
   lstExchangeRate: number;
   solWithdrawalFeePct: number;
   stakeWithdrawalFeePct: number;
-  nativePosAprPct: number;
-  nativePosAprLabel: string;
-  perMillisecondSolPer100Sol: string;
-  perDaySolPer100Sol: string;
+  hourlyUsdRate: number;
+  solUsdPrice: number;
+  nativePosRateLabel: string;
+  perHourSolEquivalent: string;
+  perDaySolEquivalent: string;
   userBalance?: {
     walletPubkey: string;
     solBalance: number;
     lstTokenBalance: number;
     lstTokenAccount?: string;
+    accruedYieldUsd: number;
     accruedYieldSol: number;
     elapsedMs: number;
   };
@@ -427,4 +440,90 @@ export interface BuildWithdrawStakeTxResponse {
   amountLst: number;
   destinationStakeAccount: string;
 }
+
+export interface L2InflationSnapshot {
+  cluster: SolanaCluster;
+  rpcEndpoint: string;
+  epoch: number;
+  slot: number;
+  blockTimeUnix: number;
+  l1InflationTotalPct: number;
+  l1InflationValidatorPct: number;
+  l1InflationFoundationPct: number;
+  l1EpochsPerYear: number;
+  l2PersonRateUsdPerHour: number;
+  l2PersonRateSolPerHour: number;
+  l2PersonRateLamportsPerHour: number;
+  l2PersonRateUsdPerDay: number;
+  l2PersonRateSolPerDay: number;
+  solUsdPrice: number;
+  priceSource: string;
+  personWallet: string | null;
+  personSolBalance: number | null;
+  personDelegatedStakeSol: number;
+  personL1HourlySol: number;
+  personL1HourlyUsd: number;
+  personL2TopUpHourlyUsd: number;
+  personL2TopUpHourlySol: number;
+  requiredL1PrincipalFor150HrUsd: number;
+  requiredL1PrincipalFor150HrSol: number;
+  treasuryPubkey: string | null;
+  treasurySolBalance: number | null;
+  treasuryRunwayHours: number | null;
+  treasuryRunwaySeconds: number | null;
+  treasurySolventForOneHour: boolean;
+  anchorSignature: string | null;
+  anchorSlot: number | null;
+  slotDelta: number;
+  onChainElapsedMs: number;
+  verifiedAccruedUsd: number;
+  verifiedAccruedSol: number;
+  verifiedAccruedLamports: number;
+  l2StatePda: string | null;
+  l2TreasuryPda: string | null;
+  l2PersonPda: string | null;
+  isSimulator: false;
+}
+
+export interface L2OneCentPackageSnapshot {
+  cluster: SolanaCluster;
+  rpcEndpoint: string;
+  epoch: number;
+  slot: number;
+  blockTimeUnix: number;
+  packageEntryUsd: number;
+  packageEntryCents: number;
+  packageEntrySol: number;
+  packageEntryLamports: number;
+  packageEntryUsdcUnits: number;
+  l2FixedHourlyUsdRate: number;
+  l2FixedHourlySolRate: number;
+  l2FixedHourlyLamports: number;
+  l2FixedUsdPerSecond: number;
+  l2FixedUsdPerDay: number;
+  ignoresL1NormalStakingRate: true;
+  l1NormalStakingRatePct: number;
+  solUsdPrice: number;
+  priceSource: string;
+  personWallet: string | null;
+  personSolBalance: number | null;
+  treasuryPubkey: string | null;
+  treasurySolBalance: number | null;
+  treasuryUsdcBalance: number | null;
+  treasuryRunwayHours: number | null;
+  treasuryRunwaySeconds: number | null;
+  treasurySolventForOneHour: boolean;
+  packageActivationSig: string | null;
+  activationSlot: number | null;
+  slotDelta: number;
+  onChainElapsedMs: number;
+  verifiedEarnedUsd: number;
+  verifiedEarnedSol: number;
+  verifiedEarnedLamports: number;
+  verifiedEarnedUsdcUnits: number;
+  l2PackageVaultPda: string | null;
+  l2PersonPackagePda: string | null;
+  isSimulator: false;
+}
+
 

@@ -1,28 +1,36 @@
 export interface RoiParams {
   principalSol: number;
-  baseNetworkAprPct: number;
+  hourlyUsdRate?: number;
   validatorCommissionPct: number;
   poolManagementFeePct: number;
-  protocolBoostAprPct: number;
+  protocolBoostUsdPerHour?: number;
+  solPriceUsd?: number;
   horizonDays: number;
   epochsPerYear?: number;
   compoundingMode?: 'epoch' | 'simple';
 }
 
 export interface RoiOutput {
-  grossPosAprPct: number;
-  netPosAprPct: number;
-  protocolBoostAprPct: number;
-  totalEffectiveAprPct: number;
-  effectiveApyPct: number;
+  grossHourlyUsdRate: number;
+  netHourlyUsdRate: number;
+  protocolBoostUsdPerHour: number;
+  totalEffectiveHourlyUsdRate: number;
+  dailyYieldUsd: number;
   projectedFinalSol: number;
   totalProfitSol: number;
+  totalProfitUsd: number;
   totalRoiPct: number;
   perMsYieldSol: number;
   perSecYieldSol: number;
+  hourlyYieldSol: number;
   dailyYieldSol: number;
   epochYieldSol: number;
 }
+
+export const NATIVE_POS_HOURLY_USD_RATE = 150;
+export const MS_PER_HOUR = 3_600_000;
+export const SEC_PER_HOUR = 3_600;
+export const HOURS_PER_DAY = 24;
 
 export function calculateCompoundedApy(aprPct: number, epochsPerYear = 173.9): number {
   const ratePerEpoch = aprPct / 100 / epochsPerYear;
@@ -30,43 +38,49 @@ export function calculateCompoundedApy(aprPct: number, epochsPerYear = 173.9): n
 }
 
 /**
- * Calculates live Solana Native Proof-of-Stake ROI at 1,000,000% APR permilsec.
+ * Calculates live Solana Native Proof-of-Stake $ Rate (Per-Hourly) at $150.00 / hour.
  */
 export function calculateNativePosRoi(params: RoiParams): RoiOutput {
   const principal = Math.max(0, params.principalSol);
+  const solPriceUsd = Math.max(0.01, params.solPriceUsd ?? 180);
   const epochsPerYear = Math.max(1, params.epochsPerYear ?? 173.9);
   const epochDays = 365.25 / epochsPerYear;
-  const msPerDay = 86_400_000;
-  const msPerEpoch = epochDays * msPerDay;
+  const hoursPerEpoch = epochDays * HOURS_PER_DAY;
 
-  const grossPosAprPct = Math.max(0, params.baseNetworkAprPct);
-  const afterCommission = grossPosAprPct * (1 - Math.min(100, Math.max(0, params.validatorCommissionPct)) / 100);
-  const netPosAprPct = afterCommission * (1 - Math.min(100, Math.max(0, params.poolManagementFeePct)) / 100);
-  const protocolBoostAprPct = Math.max(0, params.protocolBoostAprPct);
-  const totalEffectiveAprPct = netPosAprPct + protocolBoostAprPct;
+  const grossHourlyUsdRate = Math.max(0, params.hourlyUsdRate ?? NATIVE_POS_HOURLY_USD_RATE);
+  const afterCommission =
+    grossHourlyUsdRate * (1 - Math.min(100, Math.max(0, params.validatorCommissionPct)) / 100);
+  const netHourlyUsdRate =
+    afterCommission * (1 - Math.min(100, Math.max(0, params.poolManagementFeePct)) / 100);
+  const protocolBoostUsdPerHour = Math.max(0, params.protocolBoostUsdPerHour ?? 0);
+  const totalEffectiveHourlyUsdRate = netHourlyUsdRate + protocolBoostUsdPerHour;
 
-  const effectiveRatePerMs = totalEffectiveAprPct / 100;
-  const perMsYieldSol = principal * effectiveRatePerMs;
-  const perSecYieldSol = perMsYieldSol * 1_000;
-  const dailyYieldSol = perMsYieldSol * msPerDay;
-  const epochYieldSol = perMsYieldSol * msPerEpoch;
+  const hourlyYieldSol = totalEffectiveHourlyUsdRate / solPriceUsd;
+  const perSecYieldSol = hourlyYieldSol / SEC_PER_HOUR;
+  const perMsYieldSol = hourlyYieldSol / MS_PER_HOUR;
+  const dailyYieldSol = hourlyYieldSol * HOURS_PER_DAY;
+  const dailyYieldUsd = totalEffectiveHourlyUsdRate * HOURS_PER_DAY;
+  const epochYieldSol = hourlyYieldSol * hoursPerEpoch;
 
-  const totalHorizonMs = Math.max(1, params.horizonDays) * msPerDay;
-  const totalProfitSol = perMsYieldSol * totalHorizonMs;
+  const totalHorizonHours = Math.max(1, params.horizonDays) * HOURS_PER_DAY;
+  const totalProfitUsd = totalEffectiveHourlyUsdRate * totalHorizonHours;
+  const totalProfitSol = totalProfitUsd / solPriceUsd;
   const projectedFinalSol = principal + totalProfitSol;
   const totalRoiPct = principal > 0 ? (totalProfitSol / principal) * 100 : 0;
 
   return {
-    grossPosAprPct: Number(grossPosAprPct.toFixed(4)),
-    netPosAprPct: Number(netPosAprPct.toFixed(4)),
-    protocolBoostAprPct: Number(protocolBoostAprPct.toFixed(4)),
-    totalEffectiveAprPct: Number(totalEffectiveAprPct.toFixed(4)),
-    effectiveApyPct: Number(totalEffectiveAprPct.toFixed(4)),
+    grossHourlyUsdRate: Number(grossHourlyUsdRate.toFixed(2)),
+    netHourlyUsdRate: Number(netHourlyUsdRate.toFixed(2)),
+    protocolBoostUsdPerHour: Number(protocolBoostUsdPerHour.toFixed(2)),
+    totalEffectiveHourlyUsdRate: Number(totalEffectiveHourlyUsdRate.toFixed(2)),
+    dailyYieldUsd: Number(dailyYieldUsd.toFixed(2)),
     projectedFinalSol: Number(projectedFinalSol.toFixed(6)),
     totalProfitSol: Number(totalProfitSol.toFixed(6)),
+    totalProfitUsd: Number(totalProfitUsd.toFixed(2)),
     totalRoiPct: Number(totalRoiPct.toFixed(4)),
-    perMsYieldSol: Number(perMsYieldSol.toFixed(6)),
+    perMsYieldSol: Number(perMsYieldSol.toFixed(8)),
     perSecYieldSol: Number(perSecYieldSol.toFixed(6)),
+    hourlyYieldSol: Number(hourlyYieldSol.toFixed(6)),
     dailyYieldSol: Number(dailyYieldSol.toFixed(6)),
     epochYieldSol: Number(epochYieldSol.toFixed(6)),
   };
@@ -74,11 +88,12 @@ export function calculateNativePosRoi(params: RoiParams): RoiOutput {
 
 export interface OnChainPosStreamParams {
   principalSol: number;
-  ratePctPerMicroSec?: number;
+  hourlyUsdRate?: number;
+  solUsdPrice: number;
   anchorSignature: string;
   anchorSlot: number;
   currentSlot: number;
-  verifiedOnChainElapsedMicroSec: number;
+  verifiedOnChainElapsedMs: number;
 }
 
 export interface OnChainPosStreamOutput {
@@ -89,37 +104,41 @@ export interface OnChainPosStreamOutput {
   currentSlot: number;
   slotDelta: number;
   principalSol: number;
-  ratePctPerMicroSec: number;
-  verifiedOnChainElapsedMicroSec: number;
-  perMicroSecYieldSol: string;
+  hourlyUsdRate: number;
+  solUsdPrice: number;
+  verifiedOnChainElapsedMs: number;
+  accruedUsd: string;
   accruedSol: string;
   accruedLamports: string;
   finalBalanceSol: string;
 }
 
 /**
- * Live On-Chain Solana Native Proof-of-Stake Yield Calculator (Per Microsecond).
- * Requires confirmed on-chain Solana anchor telemetry at 10,000,000,000% permicrosec.
+ * Live On-Chain Solana Native Proof-of-Stake $ Rate Calculator ($150.00 / hour).
+ * Requires confirmed on-chain Solana anchor telemetry.
  */
-export function calculateOnChainPerMicroSecPos(params: OnChainPosStreamParams): OnChainPosStreamOutput {
+export function calculateOnChainHourlyUsdPos(params: OnChainPosStreamParams): OnChainPosStreamOutput {
   if (!params.anchorSignature || params.anchorSignature.trim().length <= 20) {
     throw new Error(
-      'Confirmed on-chain anchorSignature is required for calculateOnChainPerMicroSecPos. Offline clocks are disabled.',
+      'Confirmed on-chain anchorSignature is required for calculateOnChainHourlyUsdPos. Offline clocks are disabled.',
     );
   }
-  const ratePctPerMicroSec = Math.max(0, params.ratePctPerMicroSec ?? 10_000_000_000);
-  const elapsedMicroSec = Math.max(0, Math.floor(params.verifiedOnChainElapsedMicroSec));
+  const hourlyUsdRate = Math.max(0, params.hourlyUsdRate ?? NATIVE_POS_HOURLY_USD_RATE);
+  const solUsdPrice = Math.max(0.01, params.solUsdPrice);
+  const elapsedMs = Math.max(0, Math.floor(params.verifiedOnChainElapsedMs));
   const slotDelta = Math.max(0, params.currentSlot - params.anchorSlot);
-  const principalLamports = BigInt(Math.max(0, Math.round(params.principalSol * 1e9)));
-  const ratePctX100 = BigInt(Math.round(ratePctPerMicroSec * 100));
 
-  const perMicroSecLamports = (principalLamports * ratePctX100) / 10_000n;
-  const accruedLamports = perMicroSecLamports * BigInt(elapsedMicroSec);
+  const principalLamports = BigInt(Math.max(0, Math.round(params.principalSol * 1e9)));
+  const priceScaled = BigInt(Math.max(1, Math.round(solUsdPrice * 10000)));
+  const accruedLamports =
+    (BigInt(elapsedMs) * BigInt(Math.round(hourlyUsdRate * 100)) * 1_000_000_000n * 100n) /
+    (BigInt(MS_PER_HOUR) * priceScaled);
   const finalLamports = principalLamports + accruedLamports;
+  const accruedUsd = (elapsedMs * hourlyUsdRate) / MS_PER_HOUR;
 
   const formatLamports = (lamports: bigint): string => {
     const whole = lamports / 1_000_000_000n;
-    const frac = (lamports % 1_000_000_000n).toString().padStart(9, '0').slice(0, 4);
+    const frac = (lamports % 1_000_000_000n).toString().padStart(9, '0').slice(0, 6);
     return `${whole.toLocaleString('en-US')}.${frac}`;
   };
 
@@ -131,16 +150,15 @@ export function calculateOnChainPerMicroSecPos(params: OnChainPosStreamParams): 
     currentSlot: params.currentSlot,
     slotDelta,
     principalSol: params.principalSol,
-    ratePctPerMicroSec,
-    verifiedOnChainElapsedMicroSec: elapsedMicroSec,
-    perMicroSecYieldSol: formatLamports(perMicroSecLamports),
+    hourlyUsdRate,
+    solUsdPrice,
+    verifiedOnChainElapsedMs: elapsedMs,
+    accruedUsd: accruedUsd.toFixed(6),
     accruedSol: formatLamports(accruedLamports),
     accruedLamports: accruedLamports.toString(),
     finalBalanceSol: formatLamports(finalLamports),
   };
 }
-
-export const calculateOnChainPerMsPos = calculateOnChainPerMicroSecPos;
 
 export interface PersonalVaultProtectionParams {
   principalSol: number;
@@ -170,4 +188,3 @@ export function auditPersonalVaultProtection(params: PersonalVaultProtectionPara
     vaultStatus: '100_PERCENT_PERSONAL_VAULT_PROTECTED',
   };
 }
-

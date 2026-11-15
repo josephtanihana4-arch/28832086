@@ -25,7 +25,7 @@ export function MainnetOverview({
   onNavigateTab,
 }: MainnetOverviewProps) {
   const [search, setSearch] = useState('');
-  const [sortBy, setSortBy] = useState<'stake' | 'apy' | 'commission'>('stake');
+  const [sortBy, setSortBy] = useState<'stake' | 'hourly' | 'commission'>('stake');
 
   const filteredValidators = useMemo(() => {
     if (!network) return [];
@@ -38,7 +38,7 @@ export function MainnetOverview({
       );
     });
     return [...list].sort((a, b) => {
-      if (sortBy === 'apy') return b.estimatedNetApyPct - a.estimatedNetApyPct;
+      if (sortBy === 'hourly') return b.estimatedNetHourlyUsd - a.estimatedNetHourlyUsd;
       if (sortBy === 'commission') return a.commission - b.commission;
       return b.activatedStakeSol - a.activatedStakeSol;
     });
@@ -90,9 +90,9 @@ export function MainnetOverview({
           <h1 className="text-2xl lg:text-3xl font-semibold tracking-tight text-slate-50 [text-wrap:balance]">
             Solana Staking Yield &amp; Standalone Pool Infrastructure
           </h1>
-          <p className="text-sm text-slate-400 leading-relaxed">
-            Real-time epoch inflation, native Proof-of-Stake APR/APY, and active validator vote
-            accounts queried directly from{' '}
+          <p className="text-sm text-slate-400">
+            Real-time epoch inflation, native Proof-of-Stake ${network.hourlyUsdRate.toFixed(2)}/hour
+            rate, and active validator vote accounts queried directly from{' '}
             <span className="font-mono text-slate-300">{network.rpcEndpoint}</span>. Build and
             deploy an isolated on-chain SPL Stake Pool without connecting to external third-party
             pools.
@@ -120,15 +120,16 @@ export function MainnetOverview({
       {/* 4-column KPI strip */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="p-5 rounded-lg border border-slate-800 bg-[#0F1623] space-y-2">
-          <div className="text-xs text-slate-400">Native PoS Base APR</div>
+          <div className="text-xs text-slate-400">Native PoS $ Rate (Per-Hourly)</div>
           <div className="text-2xl font-mono font-semibold tabular-nums text-emerald-400">
-            {network.baseNetworkAprPct.toLocaleString()}%{' '}
+            ${network.hourlyUsdRate.toFixed(2)}{' '}
             <span className="text-sm text-slate-400 font-normal">
-              / ms permilsec
+              / hour
             </span>
           </div>
           <div className="text-xs text-slate-500 font-mono tabular-nums">
-            Live On-Chain Solana L1 Consensus · 1,000,000% permilsec
+            ~{network.hourlySolEquivalent.toFixed(4)} SOL/hr @ ${network.solUsdPrice.toFixed(2)} · $
+            {network.dailyUsdRate.toLocaleString()}/day
           </div>
         </div>
 
@@ -202,7 +203,7 @@ export function MainnetOverview({
               {(
                 [
                   { id: 'stake', label: 'Stake' },
-                  { id: 'apy', label: 'Net APY' },
+                  { id: 'hourly', label: 'Net $/hr' },
                   { id: 'commission', label: 'Fee' },
                 ] as const
               ).map((opt) => (
@@ -229,8 +230,8 @@ export function MainnetOverview({
                 <th className="py-2.5 px-4 font-medium">Vote Account</th>
                 <th className="py-2.5 px-4 font-medium text-right">Activated Stake</th>
                 <th className="py-2.5 px-4 font-medium text-right">Commission</th>
-                <th className="py-2.5 px-4 font-medium text-right">Est. Net APR</th>
-                <th className="py-2.5 px-4 font-medium text-right">Est. Net APY</th>
+                <th className="py-2.5 px-4 font-medium text-right">Est. Net $/hr</th>
+                <th className="py-2.5 px-4 font-medium text-right">Est. Net $/day</th>
                 <th className="py-2.5 px-4 font-medium text-right">Status</th>
                 <th className="py-2.5 px-4 font-medium text-right">Action</th>
               </tr>
@@ -263,10 +264,10 @@ export function MainnetOverview({
                       {v.commission}%
                     </td>
                     <td className="py-2.5 px-4 font-mono tabular-nums text-right text-slate-300">
-                      {v.estimatedNetAprPct.toLocaleString()}%/ms
+                      ${v.estimatedNetHourlyUsd.toFixed(2)}/hr
                     </td>
                     <td className="py-2.5 px-4 font-mono tabular-nums text-right text-emerald-400 font-medium">
-                      {v.estimatedNetApyPct.toLocaleString()}%/ms
+                      ${v.estimatedNetDailyUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}/day
                     </td>
                     <td className="py-2.5 px-4 text-right">
                       <span

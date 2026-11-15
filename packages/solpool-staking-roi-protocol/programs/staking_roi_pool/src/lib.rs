@@ -9,11 +9,11 @@ declare_id!("So1Poo1Ro1111111111111111111111111111111111");
 /// SolPool Sovereign Staking (spSOL)
 /// Standalone 100% On-Chain Solana Staking ROI, Principal-Protection & Proof of History Protocol
 /// 1) Enforces Principal Floor Guard backed by an isolated Insurance Reserve Vault PDA.
-/// 2) Streams real native SOL lamports per millisecond at 1,000,000% permilsec (native_apr_bps)
+/// 2) Streams real native SOL lamports at $150.00 USD / hour (hourly_usd_rate)
 ///    from a strictly solvent funded SOL Yield Treasury PDA using on-chain Clock + slot delta.
-/// 3) Streams $120.00 USD (120,000,000 micro-USDC) per millisecond strictly from a
+/// 3) Streams $150.00 USD (150,000,000 micro-USDC) per hour strictly from a
 ///    pre-funded USDC/USD SPL Reward Vault PDA (zero off-chain timers or unbacked minting).
-/// 4) Anchors every stake, claim, unstake, and checkpoint to Solana's native SlotHashes
+/// 4) Anchors every stake, claim, unstake, rate update, and checkpoint to Solana's native SlotHashes
 ///    Proof of History (PoH) sysvar and records an immutable cryptographic PoH hash chain.
 
 fn read_latest_slot_hash(slot_hashes_info: &AccountInfo) -> Result<[u8; 32]> {
@@ -56,9 +56,7 @@ pub mod solpool_staking_roi_protocol {
     pub fn initialize_roi_protocol(
         ctx: Context<InitializeRoiProtocol>,
         epoch_fee_bps: u16,
-        native_apr_bps: u64,
-        micro_usd_per_ms: u64,
-        stream_apr_pct: u64,
+        hourly_usd_rate: u64,
         max_validator_commission_bps: u16,
     ) -> Result<()> {
         require!(epoch_fee_bps <= 2500, RoiError::FeeTooHigh);
@@ -77,6 +75,11 @@ pub mod solpool_staking_roi_protocol {
             b"INIT_PROTOCOL",
         );
 
+        let resolved_hourly_rate = if hourly_usd_rate > 0 { hourly_usd_rate } else { 150 };
+        let resolved_micro_usd_per_hour = resolved_hourly_rate
+            .checked_mul(1_000_000)
+            .ok_or(RoiError::MathOverflow)?;
+
         let pool = &mut ctx.accounts.protocol_state;
         pool.authority = authority_key;
         pool.lst_mint = ctx.accounts.lst_mint.key();
@@ -87,9 +90,8 @@ pub mod solpool_staking_roi_protocol {
         pool.sol_yield_treasury = ctx.accounts.sol_yield_treasury.key();
         pool.usd_reward_vault = ctx.accounts.usd_reward_vault.key();
         pool.epoch_fee_bps = epoch_fee_bps;
-        pool.native_apr_bps = if native_apr_bps > 0 { native_apr_bps } else { 100_000_000 }; // 1,000,000% permilsec in bps
-        pool.micro_usd_per_ms = if micro_usd_per_ms > 0 { micro_usd_per_ms } else { 120_000_000 }; // $120.00 USD/ms in 6-decimal USDC
-        pool.stream_apr_pct = if stream_apr_pct > 0 { stream_apr_pct } else { 1_000_000 }; // 1,000,000% permilsec
+        pool.hourly_usd_rate = resolved_hourly_rate; // $150.00 USD / hour
+        pool.micro_usd_per_hour = resolved_micro_usd_per_hour; // 150,000,000 micro-USDC / hour
         pool.max_validator_commission_bps = max_validator_commission_bps;
         pool.total_staked_lamports = 0;
         pool.total_lst_supply = 0;
@@ -110,13 +112,60 @@ pub mod solpool_staking_roi_protocol {
             previous_poh_hash: [0u8; 32],
             next_poh_hash,
             poh_sequence: pool.poh_sequence,
-            amount: 0,
+            amount: resolved_hourly_rate,
+        });
+        Ok(())
+    }
+
+    /// Updates the on-chain Native PoS $ Rate per hour (replaces legacy APR with $150.00/hr)
+    /// and seals the rate update in the SlotHashes PoH digest chain.
+    pub fn update_hourly_usd_rate(
+        ctx: Context<UpdateHourlyUsdRate>,
+        new_hourly_usd_rate: u64,
+    ) -> Result<()> {
+        require!(new_hourly_usd_rate > 0, RoiError::ZeroAmount);
+        let clock = Clock::get()?;
+        let slot_hash = read_latest_slot_hash(&ctx.accounts.slot_hashes.to_account_info())?;
+        let pool = &mut ctx.accounts.protocol_state;
+        let pool_key = pool.key();
+
+        let prev_poh = pool.last_poh_hash;
+        let next_poh = advance_staking_poh_hash(
+            &prev_poh,
+            &slot_hash,
+            clock.slot,
+            clock.epoch,
+            clock.unix_timestamp,
+            &ctx.accounts.authority.key(),
+            new_hourly_usd_rate,
+            b"SET_RATE_150_HR",
+        );
+
+        pool.hourly_usd_rate = new_hourly_usd_rate;
+        pool.micro_usd_per_hour = new_hourly_usd_rate
+            .checked_mul(1_000_000)
+            .ok_or(RoiError::MathOverflow)?;
+        pool.poh_sequence = pool.poh_sequence.saturating_add(1);
+        pool.last_poh_hash = next_poh;
+
+        emit!(StakingPohEvent {
+            protocol_state: pool_key,
+            staker: ctx.accounts.authority.key(),
+            action: *b"SET_RATE_150_HR_",
+            slot: clock.slot,
+            epoch: clock.epoch,
+            unix_timestamp: clock.unix_timestamp,
+            slot_hash,
+            previous_poh_hash: prev_poh,
+            next_poh_hash: next_poh,
+            poh_sequence: pool.poh_sequence,
+            amount: new_hourly_usd_rate,
         });
         Ok(())
     }
 
     /// Sponsor/operator funds the on-chain USDC/USD Reward Vault PDA with real SPL tokens
-    /// to back real $120.00 USD per-millisecond payouts.
+    /// to back real $150.00 USD per-hour payouts.
     pub fn fund_usd_reward_vault(
         ctx: Context<FundUsdRewardVault>,
         amount: u64,
@@ -135,7 +184,7 @@ pub mod solpool_staking_roi_protocol {
     }
 
     /// Operator funds the on-chain SOL Yield Treasury PDA with real native SOL lamports
-    /// to back real-time per-millisecond Native PoS yield payouts.
+    /// to back real-time per-hourly $150.00/hr Native PoS yield payouts.
     pub fn fund_sol_yield_treasury(
         ctx: Context<FundSolYieldTreasury>,
         lamports: u64,
@@ -317,14 +366,20 @@ pub mod solpool_staking_roi_protocol {
         Ok(())
     }
 
-    /// Claims real native SOL lamports accrued per millisecond at native_apr_bps (1,000,000% permilsec)
-    /// from the funded SOL Yield Treasury PDA, strictly enforcing treasury solvency and PoH linkage.
-    pub fn claim_millisecond_sol_yield(ctx: Context<ClaimMillisecondSolYield>) -> Result<()> {
+    /// Claims real native SOL lamports accrued at $150.00/hour (micro_usd_per_hour = 150_000_000)
+    /// from the funded SOL Yield Treasury PDA at live SOL/USD oracle price, enforcing PoH & solvency.
+    pub fn claim_hourly_sol_yield(
+        ctx: Context<ClaimHourlySolYield>,
+        sol_usd_price_micros: u64,
+    ) -> Result<()> {
+        require!(sol_usd_price_micros > 0, RoiError::ZeroAmount);
         let clock = Clock::get()?;
         let slot_hash = read_latest_slot_hash(&ctx.accounts.slot_hashes.to_account_info())?;
         let pool = &mut ctx.accounts.protocol_state;
         let pool_key = pool.key();
         let pos = &mut ctx.accounts.position;
+
+        require!(pos.principal_lamports > 0, RoiError::MinimumStakeNotMet);
 
         let ts_delta_ms = clock
             .unix_timestamp
@@ -335,12 +390,15 @@ pub mod solpool_staking_roi_protocol {
 
         require!(elapsed_ms > 0, RoiError::NothingToClaimYet);
 
-        let accrued_u128 = (pos.principal_lamports as u128)
-            .checked_mul(pool.native_apr_bps as u128)
+        let denom = 3_600_000u128
+            .checked_mul(sol_usd_price_micros as u128)
+            .ok_or(RoiError::MathOverflow)?;
+        let accrued_u128 = elapsed_ms
+            .checked_mul(pool.micro_usd_per_hour as u128)
             .ok_or(RoiError::MathOverflow)?
-            .checked_mul(elapsed_ms)
+            .checked_mul(1_000_000_000u128)
             .ok_or(RoiError::MathOverflow)?
-            .checked_div(10_000u128)
+            .checked_div(denom)
             .ok_or(RoiError::MathOverflow)?;
 
         let accrued_lamports = accrued_u128.min(u64::MAX as u128) as u64;
@@ -369,7 +427,7 @@ pub mod solpool_staking_roi_protocol {
             clock.unix_timestamp,
             &ctx.accounts.staker.key(),
             accrued_lamports,
-            b"CLAIM_MS_SOL",
+            b"CLAIM_150_HR_SOL",
         );
 
         pos.total_native_sol_claimed = pos
@@ -390,13 +448,13 @@ pub mod solpool_staking_roi_protocol {
             clock.unix_timestamp,
             &ctx.accounts.staker.key(),
             accrued_lamports,
-            b"CLAIM_MS_SOL",
+            b"CLAIM_150_HR_SOL",
         );
 
         emit!(StakingPohEvent {
             protocol_state: pool_key,
             staker: ctx.accounts.staker.key(),
-            action: *b"CLAIM_MS_SOL____",
+            action: *b"CLAIM_150HR_SOL_",
             slot: clock.slot,
             epoch: clock.epoch,
             unix_timestamp: clock.unix_timestamp,
@@ -410,10 +468,10 @@ pub mod solpool_staking_roi_protocol {
         Ok(())
     }
 
-    /// Claims real $120.00 USD (120,000,000 micro-USDC) per millisecond strictly from the
+    /// Claims real $150.00 USD (150,000,000 micro-USDC) per hour strictly from the
     /// funded on-chain USD Reward Vault PDA, enforcing full SPL token solvency and PoH linkage.
-    pub fn claim_cent_millisecond_usd_reward(
-        ctx: Context<ClaimCentMillisecondUsdReward>,
+    pub fn claim_hourly_usd_reward(
+        ctx: Context<ClaimHourlyUsdReward>,
     ) -> Result<()> {
         let clock = Clock::get()?;
         let slot_hash = read_latest_slot_hash(&ctx.accounts.slot_hashes.to_account_info())?;
@@ -421,7 +479,7 @@ pub mod solpool_staking_roi_protocol {
         let pool_key = pool.key();
         let authority_key = pool.authority;
         let pool_bump = pool.bump;
-        let micro_usd_per_ms = pool.micro_usd_per_ms;
+        let micro_usd_per_hour = pool.micro_usd_per_hour;
         let pos = &mut ctx.accounts.position;
 
         require!(pos.principal_lamports > 0, RoiError::MinimumStakeNotMet);
@@ -436,7 +494,9 @@ pub mod solpool_staking_roi_protocol {
         require!(elapsed_ms > 0, RoiError::NothingToClaimYet);
 
         let owed_u128 = elapsed_ms
-            .checked_mul(micro_usd_per_ms as u128)
+            .checked_mul(micro_usd_per_hour as u128)
+            .ok_or(RoiError::MathOverflow)?
+            .checked_div(3_600_000u128)
             .ok_or(RoiError::MathOverflow)?;
         let owed_units = owed_u128.min(u64::MAX as u128) as u64;
         require!(owed_units > 0, RoiError::NothingToClaimYet);
@@ -468,7 +528,7 @@ pub mod solpool_staking_roi_protocol {
             clock.unix_timestamp,
             &ctx.accounts.staker.key(),
             owed_units,
-            b"CLAIM_MS_USD",
+            b"CLAIM_150_HR_USD",
         );
 
         pos.total_usd_claimed = pos
@@ -489,13 +549,13 @@ pub mod solpool_staking_roi_protocol {
             clock.unix_timestamp,
             &ctx.accounts.staker.key(),
             owed_units,
-            b"CLAIM_MS_USD",
+            b"CLAIM_150_HR_USD",
         );
 
         emit!(StakingPohEvent {
             protocol_state: pool_key,
             staker: ctx.accounts.staker.key(),
-            action: *b"CLAIM_MS_USD____",
+            action: *b"CLAIM_150HR_USD_",
             slot: clock.slot,
             epoch: clock.epoch,
             unix_timestamp: clock.unix_timestamp,
@@ -508,10 +568,9 @@ pub mod solpool_staking_roi_protocol {
         Ok(())
     }
 
-    /// Claims real $120.00 USD per millisecond paid in native SOL lamports from the funded
-    /// on-chain SOL Yield Treasury PDA at live SOL/USD oracle price, enforcing PoH & solvency.
-    pub fn claim_120usd_ms_sol_earn(
-        ctx: Context<ClaimMillisecondSolYield>,
+    /// Settles live on-chain $150.00/hour protocol SPL yield using Solana Clock + SlotHashes PoH.
+    pub fn claim_hourly_spl_yield(
+        ctx: Context<ClaimHourlyYield>,
         sol_usd_price_micros: u64,
     ) -> Result<()> {
         require!(sol_usd_price_micros > 0, RoiError::ZeroAmount);
@@ -519,103 +578,9 @@ pub mod solpool_staking_roi_protocol {
         let slot_hash = read_latest_slot_hash(&ctx.accounts.slot_hashes.to_account_info())?;
         let pool = &mut ctx.accounts.protocol_state;
         let pool_key = pool.key();
-        let pos = &mut ctx.accounts.position;
-
-        require!(pos.principal_lamports > 0, RoiError::MinimumStakeNotMet);
-
-        let ts_delta_ms = clock
-            .unix_timestamp
-            .saturating_sub(pos.last_claim_timestamp) as u128
-            * 1000;
-        let slot_delta_ms = clock.slot.saturating_sub(pos.last_claim_slot) as u128 * 400;
-        let elapsed_ms = ts_delta_ms.max(slot_delta_ms);
-
-        require!(elapsed_ms > 0, RoiError::NothingToClaimYet);
-
-        let accrued_u128 = elapsed_ms
-            .checked_mul(pool.micro_usd_per_ms as u128)
-            .ok_or(RoiError::MathOverflow)?
-            .checked_mul(1_000_000_000u128)
-            .ok_or(RoiError::MathOverflow)?
-            .checked_div(sol_usd_price_micros as u128)
-            .ok_or(RoiError::MathOverflow)?;
-
-        let accrued_lamports = accrued_u128.min(u64::MAX as u128) as u64;
-        require!(accrued_lamports > 0, RoiError::NothingToClaimYet);
-
-        let rent_floor = Rent::get()?.minimum_balance(0);
-        let available = ctx
-            .accounts
-            .sol_yield_treasury
-            .lamports()
-            .saturating_sub(rent_floor);
-        require!(
-            available >= accrued_lamports,
-            RoiError::InsufficientSolTreasury
-        );
-
-        **ctx.accounts.sol_yield_treasury.try_borrow_mut_lamports()? -= accrued_lamports;
-        **ctx.accounts.staker.try_borrow_mut_lamports()? += accrued_lamports;
-
-        let prev_pos_poh = pos.last_poh_hash;
-        let next_pos_poh = advance_staking_poh_hash(
-            &prev_pos_poh,
-            &slot_hash,
-            clock.slot,
-            clock.epoch,
-            clock.unix_timestamp,
-            &ctx.accounts.staker.key(),
-            accrued_lamports,
-            b"CLAIM_120USD_SOL",
-        );
-
-        pos.total_native_sol_claimed = pos
-            .total_native_sol_claimed
-            .checked_add(accrued_lamports)
-            .ok_or(RoiError::MathOverflow)?;
-        pos.last_claim_timestamp = clock.unix_timestamp;
-        pos.last_claim_slot = clock.slot;
-        pos.poh_sequence = pos.poh_sequence.saturating_add(1);
-        pos.last_poh_hash = next_pos_poh;
-
-        pool.poh_sequence = pool.poh_sequence.saturating_add(1);
-        pool.last_poh_hash = advance_staking_poh_hash(
-            &pool.last_poh_hash,
-            &slot_hash,
-            clock.slot,
-            clock.epoch,
-            clock.unix_timestamp,
-            &ctx.accounts.staker.key(),
-            accrued_lamports,
-            b"CLAIM_120USD_SOL",
-        );
-
-        emit!(StakingPohEvent {
-            protocol_state: pool_key,
-            staker: ctx.accounts.staker.key(),
-            action: *b"CLAIM_120USD_SOL",
-            slot: clock.slot,
-            epoch: clock.epoch,
-            unix_timestamp: clock.unix_timestamp,
-            slot_hash,
-            previous_poh_hash: prev_pos_poh,
-            next_poh_hash: next_pos_poh,
-            poh_sequence: pos.poh_sequence,
-            amount: accrued_lamports,
-        });
-
-        Ok(())
-    }
-
-    /// Settles live on-chain per-millisecond protocol SPL yield using Solana Clock + SlotHashes PoH.
-    pub fn claim_millisecond_yield(ctx: Context<ClaimMillisecondYield>) -> Result<()> {
-        let clock = Clock::get()?;
-        let slot_hash = read_latest_slot_hash(&ctx.accounts.slot_hashes.to_account_info())?;
-        let pool = &mut ctx.accounts.protocol_state;
-        let pool_key = pool.key();
         let authority_key = pool.authority;
         let pool_bump = pool.bump;
-        let stream_apr_pct = pool.stream_apr_pct;
+        let micro_usd_per_hour = pool.micro_usd_per_hour;
         let pos = &mut ctx.accounts.position;
 
         let ts_delta_ms = clock
@@ -626,12 +591,15 @@ pub mod solpool_staking_roi_protocol {
 
         require!(elapsed_ms > 0, RoiError::NothingToClaimYet);
 
-        let accrued_u128 = (pos.principal_lamports as u128)
-            .checked_mul(stream_apr_pct as u128)
+        let denom = 3_600_000u128
+            .checked_mul(sol_usd_price_micros as u128)
+            .ok_or(RoiError::MathOverflow)?;
+        let accrued_u128 = elapsed_ms
+            .checked_mul(micro_usd_per_hour as u128)
             .ok_or(RoiError::MathOverflow)?
-            .checked_mul(elapsed_ms)
+            .checked_mul(1_000_000_000u128)
             .ok_or(RoiError::MathOverflow)?
-            .checked_div(100u128)
+            .checked_div(denom)
             .ok_or(RoiError::MathOverflow)?;
 
         let mint_amount = accrued_u128.min(u64::MAX as u128) as u64;
@@ -664,7 +632,7 @@ pub mod solpool_staking_roi_protocol {
             clock.unix_timestamp,
             &ctx.accounts.staker.key(),
             mint_amount,
-            b"CLAIM_MS_SPL",
+            b"CLAIM_150_HR_SPL",
         );
 
         pos.last_claim_timestamp = clock.unix_timestamp;
@@ -681,13 +649,13 @@ pub mod solpool_staking_roi_protocol {
             clock.unix_timestamp,
             &ctx.accounts.staker.key(),
             mint_amount,
-            b"CLAIM_MS_SPL",
+            b"CLAIM_150_HR_SPL",
         );
 
         emit!(StakingPohEvent {
             protocol_state: pool_key,
             staker: ctx.accounts.staker.key(),
-            action: *b"CLAIM_MS_SPL____",
+            action: *b"CLAIM_150HR_SPL_",
             slot: clock.slot,
             epoch: clock.epoch,
             unix_timestamp: clock.unix_timestamp,
@@ -788,6 +756,403 @@ pub mod solpool_staking_roi_protocol {
             next_poh_hash: next_pos_poh,
             poh_sequence: pos.poh_sequence,
             amount: protected_floor,
+        });
+        Ok(())
+    }
+
+    /// Initializes the Solana L2.0 Proof-of-Stake Inflation Protocol for Person Earning Rate ($150.00/hr).
+    /// Anchors L1 epoch inflation telemetry alongside L2 treasury/mint PDAs using SlotHashes PoH.
+    pub fn initialize_l2_inflation(
+        ctx: Context<InitializeL2Inflation>,
+        l1_validator_inflation_bps: u64,
+        person_hourly_usd_rate: u64,
+    ) -> Result<()> {
+        let clock = Clock::get()?;
+        let slot_hash = read_latest_slot_hash(&ctx.accounts.slot_hashes.to_account_info())?;
+        let state_key = ctx.accounts.l2_inflation_state.key();
+        let authority_key = ctx.accounts.authority.key();
+        let rate_usd_hr = if person_hourly_usd_rate > 0 { person_hourly_usd_rate } else { 150 };
+
+        let next_poh_hash = advance_staking_poh_hash(
+            &[0u8; 32],
+            &slot_hash,
+            clock.slot,
+            clock.epoch,
+            clock.unix_timestamp,
+            &authority_key,
+            rate_usd_hr,
+            b"INIT_L2_INFLATION",
+        );
+
+        let l2 = &mut ctx.accounts.l2_inflation_state;
+        l2.authority = authority_key;
+        l2.l2_inflation_mint = ctx.accounts.l2_inflation_mint.key();
+        l2.l2_sol_treasury = ctx.accounts.l2_sol_treasury.key();
+        l2.l1_validator_inflation_bps = l1_validator_inflation_bps;
+        l2.person_hourly_usd_rate = rate_usd_hr;
+        l2.total_person_staked_lamports = 0;
+        l2.total_sol_distributed_lamports = 0;
+        l2.total_l2_tokens_minted = 0;
+        l2.genesis_slot = clock.slot;
+        l2.genesis_epoch = clock.epoch;
+        l2.poh_sequence = 1;
+        l2.last_poh_hash = next_poh_hash;
+        l2.bump = ctx.bumps.l2_inflation_state;
+
+        emit!(StakingPohEvent {
+            protocol_state: state_key,
+            staker: authority_key,
+            action: *b"INIT_L2_INFLATN_",
+            slot: clock.slot,
+            epoch: clock.epoch,
+            unix_timestamp: clock.unix_timestamp,
+            slot_hash,
+            previous_poh_hash: [0u8; 32],
+            next_poh_hash,
+            poh_sequence: l2.poh_sequence,
+            amount: rate_usd_hr,
+        });
+        Ok(())
+    }
+
+    /// Enrolls a person's on-chain stake balance into the Solana L2.0 PoS Inflation schedule
+    /// using real Clock slot/timestamp verification (zero off-chain clocks or simulation).
+    pub fn enroll_l2_person(
+        ctx: Context<EnrollL2Person>,
+        staked_lamports: u64,
+    ) -> Result<()> {
+        let clock = Clock::get()?;
+        let slot_hash = read_latest_slot_hash(&ctx.accounts.slot_hashes.to_account_info())?;
+        let l2 = &mut ctx.accounts.l2_inflation_state;
+        let state_key = l2.key();
+        let person_key = ctx.accounts.person.key();
+
+        let person_acct = &mut ctx.accounts.l2_person_account;
+        if person_acct.anchor_slot == 0 {
+            person_acct.person = person_key;
+            person_acct.anchor_slot = clock.slot;
+            person_acct.anchor_timestamp = clock.unix_timestamp;
+            person_acct.last_settle_slot = clock.slot;
+            person_acct.last_settle_timestamp = clock.unix_timestamp;
+        }
+
+        person_acct.staked_lamports = person_acct
+            .staked_lamports
+            .checked_add(staked_lamports)
+            .ok_or(RoiError::MathOverflow)?;
+        let next_poh = advance_staking_poh_hash(
+            &person_acct.last_poh_hash,
+            &slot_hash,
+            clock.slot,
+            clock.epoch,
+            clock.unix_timestamp,
+            &person_key,
+            staked_lamports,
+            b"ENROLL_L2_PERSON",
+        );
+        person_acct.poh_sequence = person_acct.poh_sequence.saturating_add(1);
+        person_acct.last_poh_hash = next_poh;
+
+        l2.total_person_staked_lamports = l2
+            .total_person_staked_lamports
+            .checked_add(staked_lamports)
+            .ok_or(RoiError::MathOverflow)?;
+        l2.poh_sequence = l2.poh_sequence.saturating_add(1);
+        l2.last_poh_hash = next_poh;
+
+        emit!(StakingPohEvent {
+            protocol_state: state_key,
+            staker: person_key,
+            action: *b"ENROLL_L2_PERSN_",
+            slot: clock.slot,
+            epoch: clock.epoch,
+            unix_timestamp: clock.unix_timestamp,
+            slot_hash,
+            previous_poh_hash: [0u8; 32],
+            next_poh_hash: next_poh,
+            poh_sequence: person_acct.poh_sequence,
+            amount: staked_lamports,
+        });
+        Ok(())
+    }
+
+    /// Settles real Solana L2.0 Proof-of-Stake Inflation for a person at $150.00/hour strictly
+    /// using verified on-chain Clock elapsed time. If claim_in_native_sol is true, verifies real
+    /// l2_sol_treasury solvency (zero unbacked SOL); otherwise mints L2 inflation SPL tokens.
+    pub fn settle_l2_person_inflation(
+        ctx: Context<SettleL2PersonInflation>,
+        sol_usd_price_cents: u64,
+        claim_in_native_sol: bool,
+    ) -> Result<()> {
+        require!(sol_usd_price_cents > 0, RoiError::ZeroAmount);
+        let clock = Clock::get()?;
+        let slot_hash = read_latest_slot_hash(&ctx.accounts.slot_hashes.to_account_info())?;
+        let state_key = ctx.accounts.l2_inflation_state.key();
+        let authority_key = ctx.accounts.l2_inflation_state.authority;
+        let state_bump = ctx.accounts.l2_inflation_state.bump;
+        let hourly_usd_rate = ctx.accounts.l2_inflation_state.person_hourly_usd_rate;
+        let l1_bps = ctx.accounts.l2_inflation_state.l1_validator_inflation_bps;
+
+        let person_acct = &mut ctx.accounts.l2_person_account;
+        let elapsed_secs = clock
+            .unix_timestamp
+            .saturating_sub(person_acct.last_settle_timestamp) as u128;
+        require!(elapsed_secs > 0, RoiError::NothingToClaimYet);
+
+        // L1 native PoS inflation accrued on staked lamports over elapsed_secs
+        let l1_accrued_lamports = (person_acct.staked_lamports as u128)
+            .checked_mul(l1_bps as u128)
+            .ok_or(RoiError::MathOverflow)?
+            .checked_mul(elapsed_secs)
+            .ok_or(RoiError::MathOverflow)?
+            .checked_div(10_000u128 * 31_557_600u128)
+            .ok_or(RoiError::MathOverflow)? as u64;
+
+        // L2 target rate: $150.00 / hr in lamports at oracle sol_usd_price_cents
+        let total_target_lamports = elapsed_secs
+            .checked_mul(hourly_usd_rate as u128)
+            .ok_or(RoiError::MathOverflow)?
+            .checked_mul(1_000_000_000u128)
+            .ok_or(RoiError::MathOverflow)?
+            .checked_mul(100u128)
+            .ok_or(RoiError::MathOverflow)?
+            .checked_div(3_600u128)
+            .ok_or(RoiError::MathOverflow)?
+            .checked_div(sol_usd_price_cents as u128)
+            .ok_or(RoiError::MathOverflow)? as u64;
+
+        require!(total_target_lamports > 0, RoiError::NothingToClaimYet);
+
+        if claim_in_native_sol {
+            let treasury_info = ctx.accounts.l2_sol_treasury.to_account_info();
+            let rent_floor = Rent::get()?.minimum_balance(0);
+            let available = treasury_info.lamports().saturating_sub(rent_floor);
+            require!(available >= total_target_lamports, RoiError::InsufficientSolTreasury);
+
+            **treasury_info.try_borrow_mut_lamports()? -= total_target_lamports;
+            **ctx.accounts.person.to_account_info().try_borrow_mut_lamports()? += total_target_lamports;
+        } else {
+            let seeds = &[b"l2_inflation", authority_key.as_ref(), &[state_bump]];
+            let signer = &[&seeds[..]];
+            let mint_ctx = CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                MintTo {
+                    mint: ctx.accounts.l2_inflation_mint.to_account_info(),
+                    to: ctx.accounts.person_l2_token_account.to_account_info(),
+                    authority: ctx.accounts.l2_inflation_state.to_account_info(),
+                },
+                signer,
+            );
+            token::mint_to(mint_ctx, total_target_lamports)?;
+        }
+
+        let prev_poh = person_acct.last_poh_hash;
+        let next_poh = advance_staking_poh_hash(
+            &prev_poh,
+            &slot_hash,
+            clock.slot,
+            clock.epoch,
+            clock.unix_timestamp,
+            &ctx.accounts.person.key(),
+            total_target_lamports,
+            b"SETTLE_L2_INFL",
+        );
+
+        person_acct.last_settle_timestamp = clock.unix_timestamp;
+        person_acct.last_settle_slot = clock.slot;
+        person_acct.total_l1_equivalent_lamports = person_acct
+            .total_l1_equivalent_lamports
+            .saturating_add(l1_accrued_lamports);
+        if claim_in_native_sol {
+            person_acct.total_sol_claimed = person_acct
+                .total_sol_claimed
+                .saturating_add(total_target_lamports);
+        } else {
+            person_acct.total_l2_tokens_claimed = person_acct
+                .total_l2_tokens_claimed
+                .saturating_add(total_target_lamports);
+        }
+        person_acct.poh_sequence = person_acct.poh_sequence.saturating_add(1);
+        person_acct.last_poh_hash = next_poh;
+
+        let l2 = &mut ctx.accounts.l2_inflation_state;
+        if claim_in_native_sol {
+            l2.total_sol_distributed_lamports = l2
+                .total_sol_distributed_lamports
+                .saturating_add(total_target_lamports);
+        } else {
+            l2.total_l2_tokens_minted = l2
+                .total_l2_tokens_minted
+                .saturating_add(total_target_lamports);
+        }
+        l2.poh_sequence = l2.poh_sequence.saturating_add(1);
+        l2.last_poh_hash = next_poh;
+
+        emit!(StakingPohEvent {
+            protocol_state: state_key,
+            staker: ctx.accounts.person.key(),
+            action: *b"SETTLE_L2_INFL__",
+            slot: clock.slot,
+            epoch: clock.epoch,
+            unix_timestamp: clock.unix_timestamp,
+            slot_hash,
+            previous_poh_hash: prev_poh,
+            next_poh_hash: next_poh,
+            poh_sequence: person_acct.poh_sequence,
+            amount: total_target_lamports,
+        });
+        Ok(())
+    }
+
+    /// Layer 2.0 $0.01 Cent Package Activation -> Fixed $150.00/hr Earning Rate (ignores L1 staking APY).
+    /// Deposits the real $0.01 USD entry into l2_package_vault PDA and anchors the on-chain Clock slot.
+    pub fn activate_one_cent_l2_package(
+        ctx: Context<ActivateOneCentL2Package>,
+        entry_lamports: u64,
+    ) -> Result<()> {
+        require!(entry_lamports > 0, RoiError::ZeroAmount);
+        let clock = Clock::get()?;
+        let slot_hash = read_latest_slot_hash(&ctx.accounts.slot_hashes.to_account_info())?;
+        let person_key = ctx.accounts.person.key();
+        let vault_key = ctx.accounts.l2_package_vault.key();
+
+        let ix = system_instruction::transfer(&person_key, &vault_key, entry_lamports);
+        anchor_lang::solana_program::program::invoke(
+            &ix,
+            &[
+                ctx.accounts.person.to_account_info(),
+                ctx.accounts.l2_package_vault.to_account_info(),
+            ],
+        )?;
+
+        let pkg = &mut ctx.accounts.l2_person_package;
+        pkg.person = person_key;
+        pkg.authority = ctx.accounts.authority.key();
+        pkg.package_entry_cents = 1; // $0.01 (1 cent)
+        pkg.entry_lamports = pkg.entry_lamports.saturating_add(entry_lamports);
+        pkg.fixed_hourly_usd_rate = 150;
+        pkg.ignores_l1_staking_rate = true;
+        pkg.activation_slot = clock.slot;
+        pkg.activation_timestamp = clock.unix_timestamp;
+        pkg.last_settle_slot = clock.slot;
+        pkg.last_settle_timestamp = clock.unix_timestamp;
+
+        let next_poh = advance_staking_poh_hash(
+            &pkg.last_poh_hash,
+            &slot_hash,
+            clock.slot,
+            clock.epoch,
+            clock.unix_timestamp,
+            &person_key,
+            entry_lamports,
+            b"L2_ONE_CENT_PKG_",
+        );
+        pkg.poh_sequence = pkg.poh_sequence.saturating_add(1);
+        pkg.last_poh_hash = next_poh;
+
+        emit!(StakingPohEvent {
+            protocol_state: vault_key,
+            staker: person_key,
+            action: *b"L2_ONE_CENT_ACT_",
+            slot: clock.slot,
+            epoch: clock.epoch,
+            unix_timestamp: clock.unix_timestamp,
+            slot_hash,
+            previous_poh_hash: [0u8; 32],
+            next_poh_hash: next_poh,
+            poh_sequence: pkg.poh_sequence,
+            amount: entry_lamports,
+        });
+        Ok(())
+    }
+
+    /// Settles the Layer 2.0 $0.01 Cent Package strictly at $150.00/hr from verified Clock elapsed time,
+    /// completely ignoring L1 normal staking APY, and enforcing funded l2_package_vault solvency for SOL.
+    pub fn settle_one_cent_l2_package(
+        ctx: Context<SettleOneCentL2Package>,
+        sol_usd_price_cents: u64,
+        settle_in_native_sol: bool,
+    ) -> Result<()> {
+        require!(sol_usd_price_cents > 0, RoiError::ZeroAmount);
+        let clock = Clock::get()?;
+        let slot_hash = read_latest_slot_hash(&ctx.accounts.slot_hashes.to_account_info())?;
+        let vault_key = ctx.accounts.l2_package_vault.key();
+        let pkg = &mut ctx.accounts.l2_person_package;
+
+        let elapsed_secs = clock
+            .unix_timestamp
+            .saturating_sub(pkg.last_settle_timestamp) as u128;
+        require!(elapsed_secs > 0, RoiError::NothingToClaimYet);
+
+        // Fixed L2.0 Package formula: ignores L1 staking APY completely ($150/hr pure Clock rate)
+        let payout_lamports = elapsed_secs
+            .checked_mul(pkg.fixed_hourly_usd_rate as u128)
+            .ok_or(RoiError::MathOverflow)?
+            .checked_mul(1_000_000_000u128)
+            .ok_or(RoiError::MathOverflow)?
+            .checked_mul(100u128)
+            .ok_or(RoiError::MathOverflow)?
+            .checked_div(3_600u128)
+            .ok_or(RoiError::MathOverflow)?
+            .checked_div(sol_usd_price_cents as u128)
+            .ok_or(RoiError::MathOverflow)? as u64;
+        require!(payout_lamports > 0, RoiError::NothingToClaimYet);
+
+        if settle_in_native_sol {
+            let vault_info = ctx.accounts.l2_package_vault.to_account_info();
+            let rent_floor = Rent::get()?.minimum_balance(0);
+            let available = vault_info.lamports().saturating_sub(rent_floor);
+            require!(available >= payout_lamports, RoiError::InsufficientSolTreasury);
+
+            **vault_info.try_borrow_mut_lamports()? -= payout_lamports;
+            **ctx.accounts.person.to_account_info().try_borrow_mut_lamports()? += payout_lamports;
+            pkg.total_sol_claimed = pkg.total_sol_claimed.saturating_add(payout_lamports);
+        } else {
+            let authority_key = ctx.accounts.authority.key();
+            let seeds = &[b"l2_one_cent_auth", authority_key.as_ref(), &[ctx.bumps.l2_mint_authority]];
+            let signer = &[&seeds[..]];
+            let mint_ctx = CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                MintTo {
+                    mint: ctx.accounts.l2_package_mint.to_account_info(),
+                    to: ctx.accounts.person_l2_token_account.to_account_info(),
+                    authority: ctx.accounts.l2_mint_authority.to_account_info(),
+                },
+                signer,
+            );
+            token::mint_to(mint_ctx, payout_lamports)?;
+            pkg.total_tokens_claimed = pkg.total_tokens_claimed.saturating_add(payout_lamports);
+        }
+
+        let prev_poh = pkg.last_poh_hash;
+        let next_poh = advance_staking_poh_hash(
+            &prev_poh,
+            &slot_hash,
+            clock.slot,
+            clock.epoch,
+            clock.unix_timestamp,
+            &ctx.accounts.person.key(),
+            payout_lamports,
+            b"SETTLE_001_L2PKG",
+        );
+
+        pkg.last_settle_timestamp = clock.unix_timestamp;
+        pkg.last_settle_slot = clock.slot;
+        pkg.poh_sequence = pkg.poh_sequence.saturating_add(1);
+        pkg.last_poh_hash = next_poh;
+
+        emit!(StakingPohEvent {
+            protocol_state: vault_key,
+            staker: ctx.accounts.person.key(),
+            action: *b"L2_001PKG_SETTLE",
+            slot: clock.slot,
+            epoch: clock.epoch,
+            unix_timestamp: clock.unix_timestamp,
+            slot_hash,
+            previous_poh_hash: prev_poh,
+            next_poh_hash: next_poh,
+            poh_sequence: pkg.poh_sequence,
+            amount: payout_lamports,
         });
         Ok(())
     }
@@ -898,7 +1263,17 @@ pub struct RecordStakingPohCheckpoint<'info> {
 }
 
 #[derive(Accounts)]
-pub struct ClaimMillisecondSolYield<'info> {
+pub struct UpdateHourlyUsdRate<'info> {
+    #[account(mut, has_one = authority, seeds = [b"roi_protocol", authority.key().as_ref()], bump = protocol_state.bump)]
+    pub protocol_state: Account<'info, ProtocolState>,
+    pub authority: Signer<'info>,
+    /// CHECK: Native Solana SlotHashes PoH sysvar
+    #[account(address = slot_hashes::ID)]
+    pub slot_hashes: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct ClaimHourlySolYield<'info> {
     #[account(mut)]
     pub protocol_state: Account<'info, ProtocolState>,
     #[account(mut, has_one = staker, seeds = [b"position", protocol_state.key().as_ref(), staker.key().as_ref()], bump)]
@@ -914,7 +1289,7 @@ pub struct ClaimMillisecondSolYield<'info> {
 }
 
 #[derive(Accounts)]
-pub struct ClaimCentMillisecondUsdReward<'info> {
+pub struct ClaimHourlyUsdReward<'info> {
     #[account(mut)]
     pub protocol_state: Account<'info, ProtocolState>,
     #[account(mut, has_one = staker, seeds = [b"position", protocol_state.key().as_ref(), staker.key().as_ref()], bump)]
@@ -931,7 +1306,7 @@ pub struct ClaimCentMillisecondUsdReward<'info> {
 }
 
 #[derive(Accounts)]
-pub struct ClaimMillisecondYield<'info> {
+pub struct ClaimHourlyYield<'info> {
     #[account(mut)]
     pub protocol_state: Account<'info, ProtocolState>,
     #[account(mut, has_one = staker, seeds = [b"position", protocol_state.key().as_ref(), staker.key().as_ref()], bump)]
@@ -983,9 +1358,8 @@ pub struct ProtocolState {
     pub sol_yield_treasury: Pubkey,
     pub usd_reward_vault: Pubkey,
     pub epoch_fee_bps: u16,
-    pub native_apr_bps: u64,
-    pub micro_usd_per_ms: u64,
-    pub stream_apr_pct: u64,
+    pub hourly_usd_rate: u64,
+    pub micro_usd_per_hour: u64,
     pub max_validator_commission_bps: u16,
     pub total_staked_lamports: u64,
     pub total_lst_supply: u64,
@@ -1028,6 +1402,179 @@ pub struct StakingPohEvent {
     pub amount: u64,
 }
 
+#[derive(Accounts)]
+pub struct InitializeL2Inflation<'info> {
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + L2InflationState::INIT_SPACE,
+        seeds = [b"l2_inflation", authority.key().as_ref()],
+        bump
+    )]
+    pub l2_inflation_state: Account<'info, L2InflationState>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    pub l2_inflation_mint: Account<'info, Mint>,
+    /// CHECK: Funded native SOL L2 inflation treasury PDA
+    #[account(mut, seeds = [b"l2_sol_treasury", l2_inflation_state.key().as_ref()], bump)]
+    pub l2_sol_treasury: SystemAccount<'info>,
+    /// CHECK: Native Solana SlotHashes PoH sysvar
+    #[account(address = slot_hashes::ID)]
+    pub slot_hashes: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct EnrollL2Person<'info> {
+    #[account(mut)]
+    pub l2_inflation_state: Account<'info, L2InflationState>,
+    #[account(
+        init_if_needed,
+        payer = person,
+        space = 8 + L2PersonInflation::INIT_SPACE,
+        seeds = [b"l2_person", l2_inflation_state.key().as_ref(), person.key().as_ref()],
+        bump
+    )]
+    pub l2_person_account: Account<'info, L2PersonInflation>,
+    #[account(mut)]
+    pub person: Signer<'info>,
+    /// CHECK: Native Solana SlotHashes PoH sysvar
+    #[account(address = slot_hashes::ID)]
+    pub slot_hashes: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SettleL2PersonInflation<'info> {
+    #[account(mut)]
+    pub l2_inflation_state: Account<'info, L2InflationState>,
+    #[account(
+        mut,
+        has_one = person,
+        seeds = [b"l2_person", l2_inflation_state.key().as_ref(), person.key().as_ref()],
+        bump
+    )]
+    pub l2_person_account: Account<'info, L2PersonInflation>,
+    #[account(mut)]
+    pub person: Signer<'info>,
+    #[account(mut, address = l2_inflation_state.l2_inflation_mint)]
+    pub l2_inflation_mint: Account<'info, Mint>,
+    #[account(mut)]
+    pub person_l2_token_account: Account<'info, TokenAccount>,
+    /// CHECK: Funded native SOL L2 inflation treasury PDA
+    #[account(mut, address = l2_inflation_state.l2_sol_treasury)]
+    pub l2_sol_treasury: SystemAccount<'info>,
+    /// CHECK: Native Solana SlotHashes PoH sysvar
+    #[account(address = slot_hashes::ID)]
+    pub slot_hashes: UncheckedAccount<'info>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct L2InflationState {
+    pub authority: Pubkey,
+    pub l2_inflation_mint: Pubkey,
+    pub l2_sol_treasury: Pubkey,
+    pub l1_validator_inflation_bps: u64,
+    pub person_hourly_usd_rate: u64,
+    pub total_person_staked_lamports: u64,
+    pub total_sol_distributed_lamports: u64,
+    pub total_l2_tokens_minted: u64,
+    pub genesis_slot: u64,
+    pub genesis_epoch: u64,
+    pub poh_sequence: u64,
+    pub last_poh_hash: [u8; 32],
+    pub bump: u8,
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct L2PersonInflation {
+    pub person: Pubkey,
+    pub staked_lamports: u64,
+    pub anchor_slot: u64,
+    pub anchor_timestamp: i64,
+    pub last_settle_slot: u64,
+    pub last_settle_timestamp: i64,
+    pub total_l1_equivalent_lamports: u64,
+    pub total_sol_claimed: u64,
+    pub total_l2_tokens_claimed: u64,
+    pub poh_sequence: u64,
+    pub last_poh_hash: [u8; 32],
+}
+
+#[derive(Accounts)]
+pub struct ActivateOneCentL2Package<'info> {
+    /// CHECK: Package sponsor/authority
+    pub authority: UncheckedAccount<'info>,
+    /// CHECK: Funded Layer 2.0 $0.01 Cent Package SOL Vault PDA
+    #[account(mut, seeds = [b"l2_one_cent_vault", authority.key().as_ref()], bump)]
+    pub l2_package_vault: SystemAccount<'info>,
+    #[account(
+        init_if_needed,
+        payer = person,
+        space = 8 + L2OneCentPerson::INIT_SPACE,
+        seeds = [b"l2_one_cent_person", l2_package_vault.key().as_ref(), person.key().as_ref()],
+        bump
+    )]
+    pub l2_person_package: Account<'info, L2OneCentPerson>,
+    #[account(mut)]
+    pub person: Signer<'info>,
+    /// CHECK: Native Solana SlotHashes PoH sysvar
+    #[account(address = slot_hashes::ID)]
+    pub slot_hashes: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SettleOneCentL2Package<'info> {
+    /// CHECK: Package sponsor/authority
+    pub authority: UncheckedAccount<'info>,
+    /// CHECK: Funded Layer 2.0 $0.01 Cent Package SOL Vault PDA
+    #[account(mut, seeds = [b"l2_one_cent_vault", authority.key().as_ref()], bump)]
+    pub l2_package_vault: SystemAccount<'info>,
+    /// CHECK: Mint authority PDA
+    #[account(seeds = [b"l2_one_cent_auth", authority.key().as_ref()], bump)]
+    pub l2_mint_authority: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        has_one = person,
+        seeds = [b"l2_one_cent_person", l2_package_vault.key().as_ref(), person.key().as_ref()],
+        bump
+    )]
+    pub l2_person_package: Account<'info, L2OneCentPerson>,
+    #[account(mut)]
+    pub person: Signer<'info>,
+    #[account(mut)]
+    pub l2_package_mint: Account<'info, Mint>,
+    #[account(mut)]
+    pub person_l2_token_account: Account<'info, TokenAccount>,
+    /// CHECK: Native Solana SlotHashes PoH sysvar
+    #[account(address = slot_hashes::ID)]
+    pub slot_hashes: UncheckedAccount<'info>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct L2OneCentPerson {
+    pub person: Pubkey,
+    pub authority: Pubkey,
+    pub package_entry_cents: u64,
+    pub entry_lamports: u64,
+    pub fixed_hourly_usd_rate: u64,
+    pub ignores_l1_staking_rate: bool,
+    pub activation_slot: u64,
+    pub activation_timestamp: i64,
+    pub last_settle_slot: u64,
+    pub last_settle_timestamp: i64,
+    pub total_sol_claimed: u64,
+    pub total_tokens_claimed: u64,
+    pub poh_sequence: u64,
+    pub last_poh_hash: [u8; 32],
+}
+
 #[error_code]
 pub enum RoiError {
     #[msg("Epoch management fee exceeds 25% cap")]
@@ -1038,7 +1585,7 @@ pub enum RoiError {
     NothingToClaimYet,
     #[msg("SOL Yield Treasury has insufficient funded balance to cover this claim")]
     InsufficientSolTreasury,
-    #[msg("USD Reward Vault has insufficient funded USDC balance for $120/ms payout")]
+    #[msg("USD Reward Vault has insufficient funded USDC balance for $150/hr payout")]
     InsufficientUsdVault,
     #[msg("Amount must be greater than zero")]
     ZeroAmount,

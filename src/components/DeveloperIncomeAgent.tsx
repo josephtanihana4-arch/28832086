@@ -116,7 +116,7 @@ export function DeveloperIncomeAgent({
           rpcUrl: customRpcUrl,
           walletPubkey,
           principalSol: principalNum,
-          streamType: 'usd_120_ms',
+          streamType: 'hourly_150_usd',
         }),
       });
       const json = await res.json();
@@ -135,7 +135,7 @@ export function DeveloperIncomeAgent({
     }
   };
 
-  const handleClaim120UsdMsInSol = async () => {
+  const handleClaim150UsdHrInSol = async () => {
     if (!walletPubkey || !walletProvider) {
       onConnectWallet();
       return;
@@ -161,7 +161,7 @@ export function DeveloperIncomeAgent({
         }),
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Failed to build $120/ms real SOL claim tx');
+      if (!res.ok) throw new Error(json.error || 'Failed to build $150/hr real SOL claim tx');
       const sig = await signAndBroadcastBase64Tx(
         walletProvider,
         json.serializedBase64,
@@ -178,7 +178,7 @@ export function DeveloperIncomeAgent({
       });
       loadLiveChainSnapshot(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'On-chain $120/ms SOL payout failed');
+      setError(err instanceof Error ? err.message : 'On-chain $150/hr SOL payout failed');
     } finally {
       setClaiming(false);
     }
@@ -193,26 +193,25 @@ export function DeveloperIncomeAgent({
   const principalNum = Math.max(0, Number(stakeAmountSol) || 0);
   const liveSolPrice = snapshot?.solUsdPrice ?? 0;
   const elapsedMsOnChain = snapshot?.anchorSignature ? Math.max(0, snapshot.onChainElapsedMs ?? 0) : 0;
-  const accruedUsdOnChain = elapsedMsOnChain * 120;
+  const accruedUsdOnChain = (elapsedMsOnChain * 150) / 3_600_000;
   const accruedSolOnChain = liveSolPrice > 0 ? accruedUsdOnChain / liveSolPrice : 0;
-  const solPerMsAtLivePrice = snapshot ? snapshot.lamportsPerMsAtLivePrice / 1e9 : 0;
-  const solPerSecAtLivePrice = snapshot ? snapshot.lamportsPerSecAtLivePrice / 1e9 : 0;
+  const solPerHourAtLivePrice = snapshot ? snapshot.lamportsPerHourAtLivePrice / 1e9 : 0;
+  const solPerDayAtLivePrice = solPerHourAtLivePrice * 24;
 
   const entryValUsd = principalNum * entryPriceUsd;
   const currentValUsd = principalNum * (liveSolPrice || entryPriceUsd);
   const drawdownUsd = Math.max(0, entryValUsd - currentValUsd);
   const drawdownPct = entryValUsd > 0 ? (drawdownUsd / entryValUsd) * 100 : 0;
 
-  const nodeSnippet = `import { Keypair } from '@solana/web3.js';
-import { TitaniumStakingProtocol } from 'solpool-staking-roi-protocol';
+  const nodeSnippet = `import { TitaniumStakingProtocol } from 'solpool-staking-roi-protocol';
 
-// Old Package 2 (Titanium Staking) — 100% Live Solana Blockchain (Zero Simulator/Offline)
+// Titanium Staking — 100% Live Solana Blockchain (Zero Simulator/Offline)
 const sdk = new TitaniumStakingProtocol("${rpcUrl}");
-const liveRate = await sdk.getPerson120UsdMsSolRate();
-console.log("$120/ms in SOL:", liveRate.lamportsPerMsAtLivePrice, "lamports/ms @ $" + liveRate.solUsdPrice);
+const liveRate = await sdk.getHourlyUsdSolRate();
+console.log("$150/hr in SOL:", liveRate.lamportsPerHourAtLivePrice, "lamports/hr @ $" + liveRate.solUsdPrice);
 
-// Anchor on-chain clock and claim real native SOL at $120.00/ms
-const earn = await sdk.getPerson120UsdMsOnChainEarn("<CONFIRMED_ANCHOR_SIGNATURE>");
+// Anchor on-chain clock and claim real native SOL at $150.00/hr
+const earn = await sdk.getHourlyUsdOnChainEarn("<CONFIRMED_ANCHOR_SIGNATURE>");
 console.log("Verified On-Chain SOL Earned:", earn.solEarned, "SOL ($" + earn.usdEarned + ")");`;
 
   const goSnippet = `package main
@@ -225,11 +224,11 @@ import (
 func main() {
     // 100% Live Solana JSON-RPC & Oracle (Zero Simulator/Offline)
     client := pos.NewClient("${rpcUrl}")
-    rate, _ := client.GetLive120UsdMsSolRate()
-    fmt.Printf("$120/ms in SOL: %.6f SOL/ms @ $%.2f/SOL\\n", rate.SolPerMs, rate.SolUsdPrice)
+    rate, _ := client.GetLive150UsdHourlySolRate()
+    fmt.Printf("$150/hr in SOL: %.6f SOL/hr @ $%.2f/SOL\\n", rate.SolPerHour, rate.SolUsdPrice)
 
-    earn, _ := client.GetOnChainPerson120UsdMsEarn("<CONFIRMED_ANCHOR_SIGNATURE>")
-    fmt.Printf("On-Chain Earned: %.6f SOL ($%.2f)\\n", earn.SolEarned, earn.UsdEarned)
+    earn, _ := client.GetOnChainHourly150UsdEarn("<CONFIRMED_ANCHOR_SIGNATURE>")
+    fmt.Printf("On-Chain Earned: %.6f SOL ($%.4f)\\n", earn.SolEarned, earn.UsdEarned)
 }`;
 
   return (
@@ -239,7 +238,7 @@ func main() {
         <div>
           <div className="flex flex-wrap items-center gap-2 mb-1">
             <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-              Live On-Chain $120/ms in Real SOL (Zero Simulator)
+              Live On-Chain $150.00 / hr in Real SOL (Zero Simulator)
             </span>
             <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
               Titanium Package 2 + Node.js &amp; Go SDK
@@ -247,7 +246,7 @@ func main() {
           </div>
           <h1 className="text-2xl font-bold text-slate-100">Person &amp; AI Developer Web3 Staking Agent</h1>
           <p className="text-sm text-slate-400 mt-1">
-            100% live Solana blockchain ({cluster}) earn staking at $120.00/ms in native SOL with confirmed ledger anchors and personal vault price protection.
+            100% live Solana blockchain ({cluster}) earn staking at $150.00/hour in native SOL with confirmed ledger anchors and personal vault price protection.
           </p>
         </div>
 
@@ -372,15 +371,15 @@ func main() {
 
           <button
             type="button"
-            onClick={handleClaim120UsdMsInSol}
+            onClick={handleClaim150UsdHrInSol}
             disabled={claiming}
             className="w-full py-2.5 px-4 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-semibold text-xs rounded-xl transition-all"
           >
             {!walletPubkey
-              ? `Connect Wallet for Live $120/ms SOL Payout (${cluster})`
+              ? `Connect Wallet for Live $150/hr SOL Payout (${cluster})`
               : claiming
                 ? 'Verifying Solana Slot & Treasury...'
-                : `Claim Verified $120/ms in Real SOL (${cluster})`}
+                : `Claim Verified $150/hr in Real SOL (${cluster})`}
           </button>
 
           {claimResult && (
@@ -401,12 +400,12 @@ func main() {
           )}
         </div>
 
-        {/* Live Blockchain $120/ms SOL Earn Breakdown */}
+        {/* Live Blockchain $150.00/hr SOL Earn Breakdown */}
         <div className="lg:col-span-2 bg-[#0B101B] border border-slate-800 rounded-2xl p-6 space-y-6">
           <div className="flex flex-wrap justify-between items-center gap-2">
             <h2 className="text-lg font-semibold text-slate-100 flex items-center gap-2">
               <DollarSign className="w-5 h-5 text-emerald-400" />
-              Live On-Chain $120/ms Real SOL Earn Stream
+              Live On-Chain $150.00 / Hour Real SOL Earn Stream
             </h2>
             <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 px-3 py-1 rounded-full border border-emerald-500/20">
               {snapshot
@@ -430,22 +429,22 @@ func main() {
             <div className="text-3xl font-mono font-bold text-emerald-400 tabular-nums">
               +{accruedSolOnChain.toFixed(6)} SOL{' '}
               <span className="text-sm font-normal text-slate-400">
-                (${accruedUsdOnChain.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} @ $120.00/ms)
+                (${accruedUsdOnChain.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 })} @ $150.00/hr)
               </span>
             </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-[#090D16] border border-slate-800/80 rounded-xl p-4">
-              <div className="text-xs text-slate-400 mb-1">$120/ms in SOL</div>
+              <div className="text-xs text-slate-400 mb-1">$150/hr in SOL</div>
               <div className="text-lg font-mono font-bold text-emerald-400 truncate">
-                +{solPerMsAtLivePrice.toFixed(4)} SOL/ms
+                +{solPerHourAtLivePrice.toFixed(6)} SOL/hr
               </div>
             </div>
             <div className="bg-[#090D16] border border-slate-800/80 rounded-xl p-4">
-              <div className="text-xs text-slate-400 mb-1">$120,000/s in SOL</div>
+              <div className="text-xs text-slate-400 mb-1">$3,600/day in SOL</div>
               <div className="text-lg font-mono font-bold text-emerald-400 truncate">
-                +{solPerSecAtLivePrice.toFixed(2)} SOL/s
+                +{solPerDayAtLivePrice.toFixed(4)} SOL/day
               </div>
             </div>
             <div className="bg-[#090D16] border border-slate-800/80 rounded-xl p-4">
@@ -459,8 +458,8 @@ func main() {
             <div className="bg-[#090D16] border border-slate-800/80 rounded-xl p-4">
               <div className="text-xs text-slate-400 mb-1">Treasury Runway</div>
               <div className="text-lg font-mono font-bold text-cyan-400 truncate">
-                {snapshot?.treasurySolRunwayMs !== null && snapshot?.treasurySolRunwayMs !== undefined
-                  ? `${snapshot.treasurySolRunwayMs.toLocaleString()} ms`
+                {snapshot?.treasurySolRunwayHours !== null && snapshot?.treasurySolRunwayHours !== undefined
+                  ? `${snapshot.treasurySolRunwayHours.toFixed(2)} hr`
                   : '—'}
               </div>
             </div>
@@ -500,7 +499,7 @@ func main() {
         <div className="flex flex-wrap justify-between items-center gap-3">
           <div>
             <h3 className="text-base font-semibold text-slate-100">Web3 Developer SDK Code Snippets (Node.js Package 2 &amp; Go)</h3>
-            <p className="text-xs text-slate-400">100% live Solana RPC &amp; oracle integration for $120/ms in real SOL — zero simulators or offline chains.</p>
+            <p className="text-xs text-slate-400">100% live Solana RPC &amp; oracle integration for $150.00/hour in real SOL — zero simulators or offline chains.</p>
           </div>
           <div className="flex items-center gap-2">
             <button

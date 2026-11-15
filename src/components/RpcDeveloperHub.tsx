@@ -380,7 +380,7 @@ console.log('Solana Mainnet 2 Slot:', probe.slot, 'Latency:', probe.latencyMs, '
 
 const sdk = new SolanaStakingRoiProtocol(rpcUrl);
 const walletState = await getWalletBalanceAndStaking(rpcUrl, '<WALLET_PUBKEY>');
-const net = await sdk.getNetworkPosMetrics(); // 1,000,000% permilsec live PoS APR
+const net = await sdk.getNetworkPosMetrics(); // Native PoS $150.00 / hr rate
 console.log({ solBalance: walletState.solBalance, stakedSol: walletState.totalStakedSol, net });
 
 // Send SOL to wallet or broadcast any signed transaction on Solana Mainnet 2:
@@ -675,7 +675,7 @@ curl -X POST "${activeProxyUrl}" \\
               },
               {
                 key: 'anchorRoiProg',
-                label: 'SolPool Anchor ROI Program (1,000,000%/ms)',
+                label: 'SolPool Anchor ROI Program ($150.00 / hr)',
                 address:
                   data?.protocolEndpoints.anchorStakingRoiProgramId ||
                   'So1Poo1Ro1111111111111111111111111111111111',

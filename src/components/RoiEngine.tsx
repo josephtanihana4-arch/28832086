@@ -7,8 +7,8 @@ interface RoiEngineProps {
   customRpcUrl?: string;
   network: NetworkOverview | null;
   defaultEpochFeePct: number;
-  defaultBoostAprPct: number;
-  onSyncToProtocol: (params: { epochFeeBps: number; protocolBoostAprPct: number }) => void;
+  defaultBoostUsdPerHour: number;
+  onSyncToProtocol: (params: { epochFeeBps: number; protocolBoostUsdPerHour: number }) => void;
 }
 
 function formatLargeSol(val: number): string {
@@ -26,16 +26,16 @@ export function RoiEngine({
   customRpcUrl,
   network,
   defaultEpochFeePct,
-  defaultBoostAprPct,
+  defaultBoostUsdPerHour,
   onSyncToProtocol,
 }: RoiEngineProps) {
   const [principalSol, setPrincipalSol] = useState(100);
-  const [baseNetworkAprPct, setBaseNetworkAprPct] = useState(
-    network?.baseNetworkAprPct || 1_000_000,
+  const [hourlyUsdRate, setHourlyUsdRate] = useState(
+    network?.hourlyUsdRate || 150,
   );
   const [validatorCommissionPct, setValidatorCommissionPct] = useState(0);
   const [poolManagementFeePct, setPoolManagementFeePct] = useState(defaultEpochFeePct);
-  const [protocolBoostAprPct, setProtocolBoostAprPct] = useState(defaultBoostAprPct);
+  const [protocolBoostUsdPerHour, setProtocolBoostUsdPerHour] = useState(defaultBoostUsdPerHour);
   const [liveSolUsdPrice, setLiveSolUsdPrice] = useState<number | null>(null);
   const [solPriceUsd, setSolPriceUsd] = useState(180);
   const [horizonDays, setHorizonDays] = useState(30);
@@ -43,10 +43,10 @@ export function RoiEngine({
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (network?.baseNetworkAprPct) {
-      setBaseNetworkAprPct(network.baseNetworkAprPct);
+    if (network?.hourlyUsdRate) {
+      setHourlyUsdRate(network.hourlyUsdRate);
     }
-  }, [network?.baseNetworkAprPct]);
+  }, [network?.hourlyUsdRate]);
 
   useEffect(() => {
     let active = true;
@@ -83,10 +83,10 @@ export function RoiEngine({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             principalSol,
-            baseNetworkAprPct,
+            hourlyUsdRate,
             validatorCommissionPct,
             poolManagementFeePct,
-            protocolBoostAprPct,
+            protocolBoostUsdPerHour,
             solPriceUsd,
             horizonDays,
             epochsPerYear: network?.epochsPerYear || 173.9,
@@ -106,10 +106,10 @@ export function RoiEngine({
     };
   }, [
     principalSol,
-    baseNetworkAprPct,
+    hourlyUsdRate,
     validatorCommissionPct,
     poolManagementFeePct,
-    protocolBoostAprPct,
+    protocolBoostUsdPerHour,
     solPriceUsd,
     horizonDays,
     network?.epochsPerYear,
@@ -120,15 +120,15 @@ export function RoiEngine({
       <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 pb-6 border-b border-slate-800">
         <div className="space-y-1.5 max-w-2xl">
           <p className="text-xs font-medium text-emerald-400">
-            Live On-Chain Solana Native PoS · 1,000,000% APR permilsec ({cluster})
+            Live On-Chain Solana Native PoS · $150.00 / hour ({cluster})
           </p>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-50">
-            Native PoS Staking ROI &amp; Permilsec APR Engine
+            Native PoS Staking ROI &amp; Per-Hourly $ Rate Engine
           </h1>
           <p className="text-sm text-slate-400">
             Computes live on-chain Solana Native Proof-of-Stake yield at{' '}
-            <span className="font-mono text-slate-200">1,000,000% permilsec</span> (10,000x
-            principal per millisecond), factoring validator commission, pool epoch fees, and
+            <span className="font-mono text-slate-200">$150.00 / hour</span> ($3,600.00/day
+            converted at live SOL/USD oracle), factoring validator commission, pool epoch fees, and
             optional on-chain protocol boosts.
           </p>
         </div>
@@ -137,7 +137,7 @@ export function RoiEngine({
           onClick={() =>
             onSyncToProtocol({
               epochFeeBps: Math.round(poolManagementFeePct * 100),
-              protocolBoostAprPct,
+              protocolBoostUsdPerHour,
             })
           }
           className="px-4 py-2 text-xs font-medium bg-emerald-400 hover:bg-emerald-300 text-slate-950 rounded-md transition-colors whitespace-nowrap shrink-0"
@@ -165,22 +165,22 @@ export function RoiEngine({
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-xs gap-2">
               <label className="font-medium text-slate-300">
-                Native PoS APR (% permilsec)
+                Native PoS $ Rate ($/hr)
               </label>
               <button
                 type="button"
-                onClick={() => setBaseNetworkAprPct(network?.baseNetworkAprPct || 1_000_000)}
+                onClick={() => setHourlyUsdRate(network?.hourlyUsdRate || 150)}
                 className="text-emerald-400 hover:underline font-mono whitespace-nowrap"
               >
-                Use Live ({(network?.baseNetworkAprPct || 1_000_000).toLocaleString()}%/ms)
+                Use Live (${(network?.hourlyUsdRate || 150).toFixed(2)}/hr)
               </button>
             </div>
             <input
               type="number"
               min={0}
-              step={1000}
-              value={baseNetworkAprPct}
-              onChange={(e) => setBaseNetworkAprPct(Math.max(0, Number(e.target.value)))}
+              step={10}
+              value={hourlyUsdRate}
+              onChange={(e) => setHourlyUsdRate(Math.max(0, Number(e.target.value)))}
               className="w-full px-3 py-2 text-sm font-mono tabular-nums bg-[#090D16] border border-slate-800 rounded-md text-slate-100 focus:outline-none focus:border-emerald-500"
             />
           </div>
@@ -220,14 +220,14 @@ export function RoiEngine({
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <label className="block text-xs font-medium text-slate-300">
-                Protocol Boost (%/ms)
+                Protocol Boost ($/hr)
               </label>
               <input
                 type="number"
                 min={0}
-                step={0.25}
-                value={protocolBoostAprPct}
-                onChange={(e) => setProtocolBoostAprPct(Number(e.target.value))}
+                step={5}
+                value={protocolBoostUsdPerHour}
+                onChange={(e) => setProtocolBoostUsdPerHour(Number(e.target.value))}
                 className="w-full px-3 py-2 text-sm font-mono tabular-nums bg-[#090D16] border border-slate-800 rounded-md text-slate-100 focus:outline-none focus:border-emerald-500"
               />
             </div>
@@ -283,15 +283,15 @@ export function RoiEngine({
             <>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                 <div className="p-4 rounded-lg border border-slate-800 bg-[#0F1623]">
-                  <div className="text-xs text-slate-400">Net Native PoS APR</div>
+                  <div className="text-xs text-slate-400">Net Hourly Rate</div>
                   <div className="mt-1 text-xl font-mono font-semibold tabular-nums text-slate-100">
-                    {result.netPosAprPct.toLocaleString()}%/ms
+                    ${result.totalEffectiveHourlyUsdRate.toLocaleString(undefined, { maximumFractionDigits: 2 })}/hr
                   </div>
                 </div>
                 <div className="p-4 rounded-lg border border-slate-800 bg-[#0F1623]">
-                  <div className="text-xs text-slate-400">Per-Millisecond Yield</div>
+                  <div className="text-xs text-slate-400">Hourly SOL Yield</div>
                   <div className="mt-1 text-xl font-mono font-semibold tabular-nums text-emerald-400">
-                    +{formatLargeSol(result.perMsYieldSol)} SOL
+                    +{formatLargeSol(result.hourlyYieldSol)} SOL
                   </div>
                 </div>
                 <div className="p-4 rounded-lg border border-slate-800 bg-[#0F1623]">
@@ -305,6 +305,9 @@ export function RoiEngine({
                   <div className="mt-1 text-xl font-mono font-semibold tabular-nums text-emerald-400">
                     +{formatLargeSol(result.totalProfitSol)} SOL
                   </div>
+                  <div className="text-[11px] font-mono text-slate-400">
+                    +${result.totalProfitUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })} USD
+                  </div>
                 </div>
               </div>
 
@@ -315,21 +318,21 @@ export function RoiEngine({
               <div className="rounded-lg border border-slate-800 bg-[#0F1623] overflow-hidden">
                 <div className="px-5 py-3 border-b border-slate-800 flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-slate-200">
-                    On-Chain Native PoS Permilsec Yield Breakdown ({cluster})
+                    On-Chain Native PoS Hourly Yield Breakdown ({cluster})
                   </h3>
                   {loading && <span className="text-xs text-slate-500">Recalculating...</span>}
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-slate-800 text-xs">
                   <div className="p-4 space-y-1">
-                    <div className="text-slate-400">Yield / 1 ms</div>
+                    <div className="text-slate-400">Yield / 1 sec</div>
                     <div className="font-mono text-sm text-emerald-400 tabular-nums">
-                      +{formatLargeSol(result.perMsYieldSol)} SOL/ms
+                      +{result.perSecYieldSol.toFixed(6)} SOL/s
                     </div>
                   </div>
                   <div className="p-4 space-y-1">
-                    <div className="text-slate-400">Yield / 1 sec</div>
+                    <div className="text-slate-400">Hourly Yield</div>
                     <div className="font-mono text-sm text-emerald-400 tabular-nums">
-                      +{formatLargeSol(result.perSecYieldSol)} SOL/s
+                      +{formatLargeSol(result.hourlyYieldSol)} SOL/hr
                     </div>
                   </div>
                   <div className="p-4 space-y-1">

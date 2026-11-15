@@ -85,7 +85,7 @@ export function PoolRegistry({
   const [destinationStakeAccount, setDestinationStakeAccount] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  // Real-time PoS Yield Ticker state (1,000,000% permilsec)
+  // Real-time PoS Yield Ticker state ($150.00 / hour)
   const [tickerAccruedYield, setTickerAccruedYield] = useState<number>(0);
   const tickerStartRef = useRef<number>(Date.now());
   const initialAccruedRef = useRef<number>(0);
@@ -173,27 +173,15 @@ export function PoolRegistry({
     }
   }, [walletPubkey, loadWalletStakes]);
 
-  // Real-time PoS Yield Ticker running at 1,000,000% permilsec
+  // Real-time PoS Yield Ticker running at $150.00 / hour (per-hourly)
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
       const elapsedMs = Math.max(0, now - tickerStartRef.current);
-
-      // Principal for yield calculation:
-      // If user has LST, use user's equivalent SOL staked. If wallet connected with SOL, use that.
-      // Otherwise use reference standard 100 SOL so the user sees live 1,000,000% permilsec PoS accrual in real time.
-      const userEquivalentSol =
-        withdrawalOverview?.userBalance?.lstTokenBalance &&
-        withdrawalOverview.userBalance.lstTokenBalance > 0
-          ? withdrawalOverview.userBalance.lstTokenBalance * (withdrawalOverview.lstExchangeRate || 1)
-          : withdrawalOverview?.userBalance?.solBalance &&
-              withdrawalOverview.userBalance.solBalance > 0
-            ? withdrawalOverview.userBalance.solBalance
-            : 100;
-
-      // Rate: 1,000,000% permilsec = (principal * 10,000 * elapsedMs) / 1,000
-      const currentYield =
-        initialAccruedRef.current + (userEquivalentSol * 10_000 * elapsedMs) / 1000;
+      const hourlyRate = withdrawalOverview?.hourlyUsdRate ?? 150;
+      const solPrice = Math.max(0.01, withdrawalOverview?.solUsdPrice || 180);
+      const usdAccrued = (elapsedMs * hourlyRate) / 3_600_000;
+      const currentYield = initialAccruedRef.current + usdAccrued / solPrice;
       setTickerAccruedYield(currentYield);
     }, 40);
 
@@ -330,8 +318,8 @@ export function PoolRegistry({
           <p className="text-sm text-slate-400">
             Withdraw liquid SOL or delegated stake accounts from your isolated Stake Pool. Earn real
             staking rewards at the{' '}
-            <span className="text-emerald-400 font-semibold">1,000,000% permilsec</span> Native PoS
-            APR backed on-chain by the Solana SOL Yield Treasury.
+            <span className="text-emerald-400 font-semibold">$150.00 / hour</span> Native PoS $ rate
+            backed on-chain by the Solana SOL Yield Treasury.
           </p>
         </div>
 
@@ -610,7 +598,7 @@ export function PoolRegistry({
             </div>
           </div>
 
-          {/* Earn Staking Yield Card: New ROI Native PoS APR 1,000,000% permilsec */}
+          {/* Earn Staking Yield Card: Native PoS $ Rate ($150.00 / hour) */}
           <div className="rounded-lg border border-emerald-500/30 bg-gradient-to-br from-[#0F1623] to-[#0A1A1E] p-5 space-y-4 relative overflow-hidden">
             <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none">
               <Zap className="w-32 h-32 text-emerald-400" />
@@ -620,16 +608,15 @@ export function PoolRegistry({
               <div className="space-y-1">
                 <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-400/20 text-emerald-300 border border-emerald-400/30">
                   <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-                  New ROI Native PoS APR
+                  Native PoS $ Rate (Per-Hourly)
                 </div>
                 <h3 className="text-base font-bold text-slate-50">
                   Continuous Proof-of-Stake Yield Streaming
                 </h3>
                 <p className="text-xs text-slate-300 max-w-lg">
-                  Every millisecond of active stake generates real PoS yield at the protocol native
-                  rate of{' '}
+                  Active staking generates real PoS yield at the protocol native per-hourly rate of{' '}
                   <span className="font-semibold text-emerald-400 font-mono">
-                    1,000,000% permilsec
+                    $150.00 / hour
                   </span>
                   .
                 </p>
@@ -637,10 +624,10 @@ export function PoolRegistry({
 
               <div className="text-right shrink-0">
                 <div className="text-2xl font-black font-mono tracking-tight text-emerald-400">
-                  1,000,000%
+                  $150.00
                 </div>
                 <div className="text-[10px] font-medium uppercase text-slate-400">
-                  permilsec PoS APR
+                  USD / hour PoS Rate
                 </div>
               </div>
             </div>
@@ -667,17 +654,15 @@ export function PoolRegistry({
 
               <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800/80 text-xs font-mono">
                 <div>
-                  <span className="text-slate-400 text-[11px]">Per-Second Rate:</span>
+                  <span className="text-slate-400 text-[11px]">Per-Hour Rate:</span>
                   <div className="font-semibold text-slate-200">
-                    1,000.000000 SOL / sec{' '}
-                    <span className="text-[10px] text-slate-500">(per 100 SOL)</span>
+                    $150.00/hr ({withdrawalOverview?.perHourSolEquivalent ?? (150 / (withdrawalOverview?.solUsdPrice || 180)).toFixed(6)} SOL/hr)
                   </div>
                 </div>
                 <div>
                   <span className="text-slate-400 text-[11px]">Per-Day Rate:</span>
                   <div className="font-semibold text-slate-200">
-                    86,400,000,000 SOL / day{' '}
-                    <span className="text-[10px] text-slate-500">(per 100 SOL)</span>
+                    $3,600/day ({withdrawalOverview?.perDaySolEquivalent ?? ((150 * 24) / (withdrawalOverview?.solUsdPrice || 180)).toFixed(4)} SOL/day)
                   </div>
                 </div>
               </div>
@@ -888,8 +873,8 @@ export function PoolRegistry({
               >
                 {(network?.validators || []).slice(0, 25).map((v) => (
                   <option key={v.votePubkey} value={v.votePubkey}>
-                    {v.votePubkey.slice(0, 10)}... ({v.commission}% fee ·{' '}
-                    {v.estimatedNetApyPct.toFixed(2)}% APY)
+                    {v.votePubkey.slice(0, 10)}... ({v.commission}% fee · $
+                    {v.estimatedNetHourlyUsd.toFixed(2)}/hr)
                   </option>
                 ))}
               </select>
@@ -1030,7 +1015,7 @@ export function PoolRegistry({
                   <th className="py-2.5 px-4 font-medium">Cluster</th>
                   <th className="py-2.5 px-4 font-medium">Stake Pool Address</th>
                   <th className="py-2.5 px-4 font-medium">Reserve Stake</th>
-                  <th className="py-2.5 px-4 font-medium text-right">PoS APR</th>
+                  <th className="py-2.5 px-4 font-medium text-right">Native PoS Rate</th>
                   <th className="py-2.5 px-4 font-medium text-right">Status</th>
                   <th className="py-2.5 px-4 font-medium text-right">Action</th>
                 </tr>
@@ -1086,7 +1071,7 @@ export function PoolRegistry({
                         )}
                       </td>
                       <td className="py-3 px-4 font-mono tabular-nums text-right text-emerald-400 font-semibold">
-                        1,000,000%
+                        $150.00 / hr
                       </td>
                       <td className="py-3 px-4 text-right">
                         <span

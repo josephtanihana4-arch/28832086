@@ -364,13 +364,12 @@ export function ProtocolBuilder({
 
               <div className="space-y-1.5">
                 <label className="block text-xs font-medium text-slate-300">
-                  Boost APR (%)
+                  Boost ($/hr)
                 </label>
                 <input
                   type="number"
                   min={0}
-                  max={50}
-                  step={0.25}
+                  step={5}
                   value={draft.protocolBoostAprPct}
                   onChange={(e) => updateField('protocolBoostAprPct', Number(e.target.value))}
                   className="w-full px-3 py-2 text-sm font-mono tabular-nums bg-[#090D16] border border-slate-800 rounded-md text-slate-100 focus:outline-none focus:border-emerald-500"
@@ -535,7 +534,7 @@ export function ProtocolBuilder({
                           {v.votePubkey.slice(0, 8)}...{v.votePubkey.slice(-6)}
                         </div>
                         <div className="font-mono tabular-nums shrink-0 text-[11px] text-slate-400">
-                          {v.commission}% fee · {v.estimatedNetApyPct.toFixed(1)}% APY
+                          {v.commission}% fee · ${v.estimatedNetHourlyUsd.toFixed(2)}/hr
                         </div>
                       </button>
                     );

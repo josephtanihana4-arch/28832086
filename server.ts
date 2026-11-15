@@ -27,6 +27,7 @@ console.log = (...args: any[]) => {
 };
 
 import express from 'express';
+import fs from 'node:fs';
 import path from 'node:path';
 import {
   auditStakeAccountProtection,
@@ -36,8 +37,17 @@ import {
   buildEmergencyDeactivateStakeTx,
   buildInitializeStakePoolTransactions,
   buildIsolateWithdrawerAuthorityTx,
+  buildL1ToL2ConversionTx,
+  buildL2InflationAnchorTx,
+  buildL2InflationSolClaimTx,
+  buildL2InflationSplMintTx,
+  buildL2OneCentActivateTx,
+  buildL2OneCentClaimSolTx,
+  buildL2OneCentClaimUsdcTx,
+  buildL2OneCentMintTokenTx,
   buildNativeSolMillisecondClaimTx,
   buildNativeStakeTransaction,
+  buildOnChainRateUpdateTx,
   buildOnChainStreamAnchorTx,
   buildPoolDepositSolTransaction,
   buildPoolWithdrawSolTransaction,
@@ -49,6 +59,8 @@ import {
   executeDevnetTestDeployment,
   fetchCentMillisecondStreamSnapshot,
   fetchDeveloperRpcLinks,
+  fetchL2OneCentPackageSnapshot,
+  fetchL2PosInflationSnapshot,
   fetchLiveStakePool,
   fetchMillisecondChainYieldSnapshot,
   fetchNetworkOverview,
@@ -68,8 +80,10 @@ import {
 } from './server/packageGenerator.ts';
 import type { RoiCalculationInput, SolanaCluster } from './server/types.ts';
 
-const PORT = Number(process.env.PORT || 3000);
-const IS_PROD = process.env.NODE_ENV === 'production';
+const PORT = Number((process.env.PORT && process.env.PORT !== '8080') ? process.env.PORT : 3000);
+const distDir = path.resolve(process.cwd(), 'dist');
+const distExists = fs.existsSync(path.join(distDir, 'index.html'));
+const IS_PROD = process.env.NODE_ENV === 'production' || (distExists && !process.env.npm_lifecycle_event?.includes('dev'));
 
 async function startServer() {
   const app = express();
@@ -327,10 +341,10 @@ async function startServer() {
       const body = req.body as Partial<RoiCalculationInput>;
       const result = calculateStakingRoi({
         principalSol: Number(body.principalSol ?? 100),
-        baseNetworkAprPct: Number(body.baseNetworkAprPct ?? 1_000_000),
+        hourlyUsdRate: Number(body.hourlyUsdRate ?? 150),
         validatorCommissionPct: Number(body.validatorCommissionPct ?? 0),
         poolManagementFeePct: Number(body.poolManagementFeePct ?? 0),
-        protocolBoostAprPct: Number(body.protocolBoostAprPct ?? 0),
+        protocolBoostUsdPerHour: Number(body.protocolBoostUsdPerHour ?? 0),
         solPriceUsd: Number(body.solPriceUsd ?? 180),
         horizonDays: Number(body.horizonDays ?? 30),
         epochsPerYear: Number(body.epochsPerYear ?? 173.9),
@@ -516,19 +530,35 @@ async function startServer() {
     }
   });
 
+  app.post('/api/stream/update-rate-tx', async (req, res) => {
+    try {
+      const body = req.body || {};
+      if (!body.walletPubkey) {
+        res.status(400).json({ error: 'walletPubkey is required to build an on-chain rate update tx' });
+        return;
+      }
+      const result = await buildOnChainRateUpdateTx(body);
+      res.json(result);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to build on-chain $150/hr rate update tx';
+      res.status(400).json({ error: message });
+    }
+  });
+
   app.get('/api/stream/chain-snapshot', async (req, res) => {
     try {
       const cluster = ((req.query.cluster as string) || 'mainnet-beta') as SolanaCluster;
       const rpcUrl = typeof req.query.rpcUrl === 'string' ? req.query.rpcUrl : undefined;
       const principalSol = Number(req.query.principalSol ?? 100);
-      const aprPct = req.query.aprPct ? Number(req.query.aprPct) : undefined;
+      const hourlyUsdRate = req.query.hourlyUsdRate ? Number(req.query.hourlyUsdRate) : 150;
       const anchorSignature =
         typeof req.query.anchorSignature === 'string' ? req.query.anchorSignature.trim() : undefined;
       const snapshot = await fetchMillisecondChainYieldSnapshot({
         cluster,
         rpcUrl,
         principalSol,
-        aprPct,
+        hourlyUsdRate,
         anchorSignature,
       });
       res.json(snapshot);
@@ -556,7 +586,7 @@ async function startServer() {
       res.json(result);
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : 'Failed to build native SOL millisecond claim tx';
+        error instanceof Error ? error.message : 'Failed to build native SOL $150/hr claim tx';
       res.status(400).json({ error: message });
     }
   });
@@ -580,7 +610,7 @@ async function startServer() {
       res.json(snapshot);
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : 'Failed to load $120/ms oracle snapshot';
+        error instanceof Error ? error.message : 'Failed to load $150/hr oracle snapshot';
       res.status(400).json({ error: message });
     }
   });
@@ -591,7 +621,7 @@ async function startServer() {
       res.json(result);
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : 'Failed to build 0.01 cent/ms SOL claim tx';
+        error instanceof Error ? error.message : 'Failed to build $150/hr SOL claim tx';
       res.status(400).json({ error: message });
     }
   });
@@ -602,7 +632,7 @@ async function startServer() {
       res.json(result);
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : 'Failed to build 0.01 cent/ms USDC claim tx';
+        error instanceof Error ? error.message : 'Failed to build $150/hr USDC claim tx';
       res.status(400).json({ error: message });
     }
   });
@@ -638,6 +668,248 @@ async function startServer() {
     }
   });
 
+  app.get('/api/l2-inflation/snapshot', async (req, res) => {
+    try {
+      const cluster = normalizeCluster(typeof req.query.cluster === 'string' ? req.query.cluster : undefined);
+      const rpcUrl = typeof req.query.rpcUrl === 'string' ? req.query.rpcUrl : undefined;
+      const personWallet =
+        typeof req.query.personWallet === 'string' ? req.query.personWallet.trim() : undefined;
+      const treasuryPubkey =
+        typeof req.query.treasuryPubkey === 'string' ? req.query.treasuryPubkey.trim() : undefined;
+      const anchorSignature =
+        typeof req.query.anchorSignature === 'string' ? req.query.anchorSignature.trim() : undefined;
+      const snapshot = await fetchL2PosInflationSnapshot({
+        cluster,
+        rpcUrl,
+        personWallet,
+        treasuryPubkey,
+        anchorSignature,
+      });
+      res.json(snapshot);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to load Solana L2.0 PoS inflation snapshot';
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post('/api/l2-inflation/anchor-tx', async (req, res) => {
+    try {
+      const body = req.body || {};
+      if (!body.personPubkey) {
+        res.status(400).json({ error: 'personPubkey is required to anchor Solana L2.0 PoS inflation' });
+        return;
+      }
+      const result = await buildL2InflationAnchorTx({
+        cluster: normalizeCluster(body.cluster),
+        rpcUrl: typeof body.rpcUrl === 'string' ? body.rpcUrl : undefined,
+        personPubkey: String(body.personPubkey),
+        stakedSol: body.stakedSol !== undefined ? Number(body.stakedSol) : 0,
+      });
+      res.json(result);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to build L2.0 inflation anchor tx';
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post('/api/l2-inflation/claim-sol-tx', async (req, res) => {
+    try {
+      const body = req.body || {};
+      if (!body.treasuryPubkey || !body.personPubkey || !body.anchorSignature) {
+        res
+          .status(400)
+          .json({ error: 'treasuryPubkey, personPubkey, and confirmed anchorSignature are required' });
+        return;
+      }
+      const result = await buildL2InflationSolClaimTx({
+        cluster: normalizeCluster(body.cluster),
+        rpcUrl: typeof body.rpcUrl === 'string' ? body.rpcUrl : undefined,
+        treasuryPubkey: String(body.treasuryPubkey),
+        personPubkey: String(body.personPubkey),
+        anchorSignature: String(body.anchorSignature),
+      });
+      res.json(result);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to build L2.0 inflation real SOL claim tx';
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post('/api/l2-inflation/mint-token-tx', async (req, res) => {
+    try {
+      const body = req.body || {};
+      if (!body.personPubkey || !body.anchorSignature) {
+        res
+          .status(400)
+          .json({ error: 'personPubkey and confirmed anchorSignature are required' });
+        return;
+      }
+      const result = await buildL2InflationSplMintTx({
+        cluster: normalizeCluster(body.cluster),
+        rpcUrl: typeof body.rpcUrl === 'string' ? body.rpcUrl : undefined,
+        personPubkey: String(body.personPubkey),
+        anchorSignature: String(body.anchorSignature),
+        stakedSol: body.stakedSol !== undefined ? Number(body.stakedSol) : 0,
+      });
+      res.json(result);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to build L2.0 inflation SPL mint tx';
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.get('/api/l2-package/snapshot', async (req, res) => {
+    try {
+      const cluster = normalizeCluster(typeof req.query.cluster === 'string' ? req.query.cluster : undefined);
+      const rpcUrl = typeof req.query.rpcUrl === 'string' ? req.query.rpcUrl : undefined;
+      const personWallet =
+        typeof req.query.personWallet === 'string' ? req.query.personWallet.trim() : undefined;
+      const treasuryPubkey =
+        typeof req.query.treasuryPubkey === 'string' ? req.query.treasuryPubkey.trim() : undefined;
+      const packageActivationSig =
+        typeof req.query.packageActivationSig === 'string'
+          ? req.query.packageActivationSig.trim()
+          : undefined;
+      const usdcMint =
+        typeof req.query.usdcMint === 'string' ? req.query.usdcMint.trim() : undefined;
+      const snapshot = await fetchL2OneCentPackageSnapshot({
+        cluster,
+        rpcUrl,
+        personWallet,
+        treasuryPubkey,
+        packageActivationSig,
+        usdcMint,
+      });
+      res.json(snapshot);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to fetch L2.0 $0.01 package snapshot';
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post('/api/l2-package/activate-tx', async (req, res) => {
+    try {
+      const body = req.body || {};
+      if (!body.personPubkey) {
+        res.status(400).json({ error: 'personPubkey is required to activate $0.01 L2.0 package' });
+        return;
+      }
+      const result = await buildL2OneCentActivateTx({
+        cluster: normalizeCluster(body.cluster),
+        rpcUrl: typeof body.rpcUrl === 'string' ? body.rpcUrl : undefined,
+        personPubkey: String(body.personPubkey),
+        treasuryPubkey: typeof body.treasuryPubkey === 'string' ? body.treasuryPubkey : undefined,
+        asset: body.asset === 'usdc' ? 'usdc' : 'sol',
+        usdcMint: typeof body.usdcMint === 'string' ? body.usdcMint : undefined,
+      });
+      res.json(result);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to build $0.01 L2.0 activation tx';
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post('/api/l2-package/claim-sol-tx', async (req, res) => {
+    try {
+      const body = req.body || {};
+      if (!body.treasuryPubkey || !body.personPubkey || !body.packageActivationSig) {
+        res.status(400).json({
+          error: 'treasuryPubkey, personPubkey, and confirmed packageActivationSig are required',
+        });
+        return;
+      }
+      const result = await buildL2OneCentClaimSolTx({
+        cluster: normalizeCluster(body.cluster),
+        rpcUrl: typeof body.rpcUrl === 'string' ? body.rpcUrl : undefined,
+        treasuryPubkey: String(body.treasuryPubkey),
+        personPubkey: String(body.personPubkey),
+        packageActivationSig: String(body.packageActivationSig),
+      });
+      res.json(result);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to build $0.01 L2.0 SOL claim tx';
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post('/api/l2-package/claim-usdc-tx', async (req, res) => {
+    try {
+      const body = req.body || {};
+      if (!body.treasuryPubkey || !body.personPubkey || !body.packageActivationSig) {
+        res.status(400).json({
+          error: 'treasuryPubkey, personPubkey, and confirmed packageActivationSig are required',
+        });
+        return;
+      }
+      const result = await buildL2OneCentClaimUsdcTx({
+        cluster: normalizeCluster(body.cluster),
+        rpcUrl: typeof body.rpcUrl === 'string' ? body.rpcUrl : undefined,
+        treasuryPubkey: String(body.treasuryPubkey),
+        personPubkey: String(body.personPubkey),
+        packageActivationSig: String(body.packageActivationSig),
+        usdcMint: typeof body.usdcMint === 'string' ? body.usdcMint : undefined,
+      });
+      res.json(result);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to build $0.01 L2.0 USDC claim tx';
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post('/api/l2-package/mint-token-tx', async (req, res) => {
+    try {
+      const body = req.body || {};
+      if (!body.personPubkey || !body.packageActivationSig) {
+        res.status(400).json({
+          error: 'personPubkey and confirmed packageActivationSig are required',
+        });
+        return;
+      }
+      const result = await buildL2OneCentMintTokenTx({
+        cluster: normalizeCluster(body.cluster),
+        rpcUrl: typeof body.rpcUrl === 'string' ? body.rpcUrl : undefined,
+        personPubkey: String(body.personPubkey),
+        packageActivationSig: String(body.packageActivationSig),
+      });
+      res.json(result);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to build $0.01 L2.0 SPL mint tx';
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post('/api/l2-package/convert-l1-tx', async (req, res) => {
+    try {
+      const body = req.body || {};
+      if (!body.personPubkey) {
+        res.status(400).json({ error: 'personPubkey is required to convert L1 stake to L2.0' });
+        return;
+      }
+      const result = await buildL1ToL2ConversionTx({
+        cluster: normalizeCluster(body.cluster),
+        rpcUrl: typeof body.rpcUrl === 'string' ? body.rpcUrl : undefined,
+        personPubkey: String(body.personPubkey),
+        stakeAccountPubkey:
+          typeof body.stakeAccountPubkey === 'string' ? body.stakeAccountPubkey : undefined,
+        conversionSol: body.conversionSol !== undefined ? Number(body.conversionSol) : 1.0,
+      });
+      res.json(result);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to build L1 to L2 conversion tx';
+      res.status(400).json({ error: message });
+    }
+  });
+
   app.post('/api/package/files', (req, res) => {
     try {
       const files = generateLegitNodePackageFiles(req.body || {});
@@ -661,7 +933,6 @@ async function startServer() {
   });
 
   if (IS_PROD) {
-    const distDir = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distDir));
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distDir, 'index.html'));

@@ -23,7 +23,7 @@ export function RoiChart({ points, principalSol }: RoiChartProps) {
   if (!points || points.length < 2) {
     return (
       <div className="h-64 flex items-center justify-center border border-slate-800 rounded-lg bg-[#0B101B] text-sm text-slate-500">
-        Enter principal and APR parameters to generate epoch projection.
+        Enter principal and hourly rate parameters to generate epoch projection.
       </div>
     );
   }

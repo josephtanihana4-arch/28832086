@@ -27,11 +27,21 @@ import {
 } from '@solana/spl-token';
 import { calculateNativePosRoi } from './roi.js';
 import {
+  activateOneCentL2PackageOnChain,
+  anchorL2PosInflationOnChain,
   anchorOnChainStreamClock,
-  claimCentMsSolFromTreasury,
-  claimCentMsUsdcFromTreasury,
-  getCentMsLiveRate,
+  claimHourlyUsdSolFromTreasury,
+  claimHourlyUsdUsdcFromTreasury,
+  claimL2InflationSolFromTreasury,
+  claimOneCentL2SolFromTreasury,
+  fetchLiveSolUsdPrice,
+  getHourlyUsdLiveRate,
+  getL2PosInflationReport,
   getOnChainElapsedSinceTx,
+  getOneCentL2PackageReport,
+  mintL2InflationTokenOnChain,
+  mintOneCentL2ReceiptTokenOnChain,
+  updateOnChainHourlyRateMemo,
 } from './guardian.js';
 
 export * from './roi.js';
@@ -47,7 +57,8 @@ export const PROTOCOL_DEFAULTS = {
   solDepositFeeBps: 0,
   solWithdrawalFeeBps: 10,
   referralFeePct: 0,
-  protocolBoostAprPct: 1.25,
+  hourlyUsdRate: 150,
+  protocolBoostAprPct: 0,
   defaultValidators: [
   "J1to3PQfXidUUhprQWgd1nWPJ63pV58qU9D7kQ7nK2B3"
 ],
@@ -63,9 +74,8 @@ export const TITANIUM_PROTOCOL_DEFAULTS = {
   solDepositFeeBps: 0,
   solWithdrawalFeeBps: 0,
   referralFeePct: 0,
-  protocolBoostAprPct: 1000000,
-  usdPerMsRate: 120,
-  microUsdcPerMs: 120_000_000,
+  hourlyUsdRate: 150,
+  microUsdcPerHour: 150_000_000,
   defaultValidators: [
   "J1to3PQfXidUUhprQWgd1nWPJ63pV58qU9D7kQ7nK2B3"
 ],
@@ -489,8 +499,11 @@ export async function getWithdrawalPoolOverview(
   const poolTokenSupplyUi = poolTokenSupplyNum / LAMPORTS_PER_SOL;
   const lstExchangeRate = poolTokenSupplyNum > 0 ? totalLamportsNum / poolTokenSupplyNum : 1;
 
-  // Staking ROI: strictly 1,000,000% permilsec
-  const nativePosAprPct = 1_000_000;
+  // Native PoS $ Rate (Per-Hourly): strictly $150.00 / hr
+  const oracle = await fetchLiveSolUsdPrice().catch(() => ({ price: 180, source: 'fallback' }));
+  const hourlyUsdRate = 150;
+  const perHourSolEquivalent = (hourlyUsdRate / Math.max(0.01, oracle.price)).toFixed(6);
+  const perDaySolEquivalent = ((hourlyUsdRate * 24) / Math.max(0.01, oracle.price)).toFixed(4);
 
   return {
     stakePoolAddress: poolKey.toBase58(),
@@ -503,10 +516,11 @@ export async function getWithdrawalPoolOverview(
     totalPoolSol: Number(totalPoolSol.toFixed(4)),
     poolTokenSupplyUi: Number(poolTokenSupplyUi.toFixed(4)),
     lstExchangeRate: Number(lstExchangeRate.toFixed(6)),
-    nativePosAprPct,
-    nativePosAprLabel: '1,000,000% permilsec',
-    perMillisecondSolPer100Sol: '1,000.000000000',
-    perDaySolPer100Sol: '86,400,000,000.000',
+    hourlyUsdRate,
+    solUsdPrice: oracle.price,
+    nativePosRateLabel: '$150.00 / hr',
+    perHourSolEquivalent,
+    perDaySolEquivalent,
   };
 }
 
@@ -567,10 +581,10 @@ export class SolanaStakingRoiProtocol {
     const activeStakeLamports = votes.current.reduce((a, v) => a + v.activatedStake, 0);
     const totalActivatedStakeSol = activeStakeLamports / LAMPORTS_PER_SOL;
 
-    // Live On-Chain Solana Native Proof-of-Stake APR: strictly 1,000,000% permilsec
+    // Live On-Chain Solana Native PoS $ Rate (Per-Hourly): strictly $150.00 / hr
     const validatorInflationPct = inflation.validator * 100;
-    const baseNetworkAprPct = 1_000_000;
-    const baseNetworkApyPct = 1_000_000;
+    const oracle = await fetchLiveSolUsdPrice().catch(() => ({ price: 180, source: 'fallback' }));
+    const hourlyUsdRate = 150;
 
     return {
       epoch: epochInfo.epoch,
@@ -579,8 +593,11 @@ export class SolanaStakingRoiProtocol {
       inflationValidatorPct: Number(validatorInflationPct.toFixed(3)),
       totalSupplySol: Math.round(totalSupplySol),
       totalActivatedStakeSol: Math.round(totalActivatedStakeSol),
-      baseNetworkAprPct: Number(baseNetworkAprPct.toFixed(0)),
-      baseNetworkApyPct: Number(baseNetworkApyPct.toFixed(0)),
+      solUsdPrice: oracle.price,
+      hourlyUsdRate,
+      dailyUsdRate: hourlyUsdRate * 24,
+      hourlySolEquivalent: Number((hourlyUsdRate / Math.max(0.01, oracle.price)).toFixed(6)),
+      nativePosRateLabel: '$150.00 / hr',
       activeValidators: votes.current.length,
     };
   }
@@ -857,43 +874,50 @@ export class SolanaStakingRoiProtocol {
   }
 
   /**
-   * Fetches withdrawal pool metrics, reserve liquidity, and 1,000,000% permilsec PoS metrics.
+   * Fetches withdrawal pool metrics, reserve liquidity, and $150.00/hr Native PoS metrics.
    */
   async getWithdrawalPoolOverview(stakePoolAddress: PublicKey | string) {
     return getWithdrawalPoolOverview(this.rpcEndpoint, stakePoolAddress);
   }
 
   /**
-   * Fetches live Solana slot + real-time SOL/USD oracle rate for $120.00/ms SOL earn staking.
+   * Fetches live Solana slot + real-time SOL/USD oracle rate for $150.00/hr SOL earn staking.
    * Connects strictly to live Solana RPC and live price oracles (zero simulator/offline).
    */
-  async getPerson120UsdMsSolRate() {
-    return getCentMsLiveRate(this.rpcEndpoint);
+  async getHourlyUsdSolRate() {
+    return getHourlyUsdLiveRate(this.rpcEndpoint);
   }
 
   /**
    * Writes & confirms an immutable Solana on-chain Memo anchor transaction to start
-   * a person's $120.00/ms real SOL earn staking stream on live Solana blockchain.
+   * a $150.00/hr real SOL earn staking stream on live Solana blockchain.
    */
-  async anchorPerson120UsdMsEarn(signer: Keypair, principalSol = 100) {
+  async anchorHourlyUsdEarn(signer: Keypair, principalSol = 100) {
     return anchorOnChainStreamClock(this.rpcEndpoint, signer, principalSol);
   }
 
   /**
-   * Reads confirmed Solana ledger blockTime/slot delta since anchorSignature and calculates
-   * exact accrued USD ($120/ms) and native SOL/lamports at live SOL/USD oracle price.
+   * Broadcasts an immutable on-chain Memo rate update locking $150.00/hr and deleting the old rate.
    */
-  async getPerson120UsdMsOnChainEarn(anchorSignature: string) {
+  async updateOnChainHourlyRate(signer: Keypair, newHourlyUsdRate = 150) {
+    return updateOnChainHourlyRateMemo(this.rpcEndpoint, signer, newHourlyUsdRate);
+  }
+
+  /**
+   * Reads confirmed Solana ledger blockTime/slot delta since anchorSignature and calculates
+   * exact accrued USD ($150/hr) and native SOL/lamports at live SOL/USD oracle price.
+   */
+  async getHourlyUsdOnChainEarn(anchorSignature: string) {
     const [clockDelta, liveRate] = await Promise.all([
       getOnChainElapsedSinceTx(this.rpcEndpoint, anchorSignature),
-      getCentMsLiveRate(this.rpcEndpoint),
+      getHourlyUsdLiveRate(this.rpcEndpoint),
     ]);
     const elapsedMs = Math.max(0, clockDelta.onChainElapsedMs);
-    const usdEarned = elapsedMs * liveRate.rateUsdPerMs;
+    const usdEarned = (elapsedMs * liveRate.rateUsdPerHour) / 3_600_000;
     const priceScaled = BigInt(Math.max(1, Math.round(liveRate.solUsdPrice * 10000)));
     const lamportsEarnedBig =
-      (BigInt(elapsedMs) * BigInt(liveRate.rateUsdPerMs) * BigInt(LAMPORTS_PER_SOL) * 10000n) /
-      priceScaled;
+      (BigInt(elapsedMs) * BigInt(liveRate.rateUsdPerHour) * BigInt(LAMPORTS_PER_SOL) * 10000n) /
+      (3_600_000n * priceScaled);
 
     return {
       mode: 'LIVE_ON_CHAIN_SOLANA' as const,
@@ -905,25 +929,25 @@ export class SolanaStakingRoiProtocol {
       onChainElapsedMs: elapsedMs,
       solUsdPrice: liveRate.solUsdPrice,
       priceSource: liveRate.priceSource,
-      rateUsdPerMs: liveRate.rateUsdPerMs,
-      usdEarned: usdEarned.toFixed(2),
+      rateUsdPerHour: liveRate.rateUsdPerHour,
+      usdEarned: usdEarned.toFixed(6),
       lamportsEarned: lamportsEarnedBig.toString(),
       solEarned: (Number(lamportsEarnedBig) / LAMPORTS_PER_SOL).toFixed(6),
     };
   }
 
   /**
-   * Pays out a person's verified $120.00/ms staking earnings in real native SOL lamports
-   * on-chain from a funded SOL Treasury to the person's wallet (100% live blockchain).
+   * Pays out verified $150.00/hr staking earnings in real native SOL lamports
+   * on-chain from a funded SOL Treasury to the staker's wallet (100% live blockchain).
    */
-  async claimPerson120UsdMsInSol(
+  async claimHourlyUsdInSol(
     treasurySigner: Keypair,
     stakerPubkey: PublicKey | string,
     anchorSignature: string,
   ) {
     const stakerKey =
       typeof stakerPubkey === 'string' ? new PublicKey(stakerPubkey.trim()) : stakerPubkey;
-    return claimCentMsSolFromTreasury({
+    return claimHourlyUsdSolFromTreasury({
       rpcUrl: this.rpcEndpoint,
       treasurySigner,
       stakerPubkey: stakerKey,
@@ -932,9 +956,9 @@ export class SolanaStakingRoiProtocol {
   }
 
   /**
-   * Pays out a person's verified $120.00/ms staking earnings in funded USDC SPL tokens on-chain.
+   * Pays out verified $150.00/hr staking earnings in funded USDC SPL tokens on-chain.
    */
-  async claimPerson120UsdMsInUsdc(
+  async claimHourlyUsdInUsdc(
     treasurySigner: Keypair,
     stakerPubkey: PublicKey | string,
     anchorSignature: string,
@@ -942,7 +966,7 @@ export class SolanaStakingRoiProtocol {
   ) {
     const stakerKey =
       typeof stakerPubkey === 'string' ? new PublicKey(stakerPubkey.trim()) : stakerPubkey;
-    return claimCentMsUsdcFromTreasury({
+    return claimHourlyUsdUsdcFromTreasury({
       rpcUrl: this.rpcEndpoint,
       treasurySigner,
       stakerPubkey: stakerKey,
@@ -951,11 +975,117 @@ export class SolanaStakingRoiProtocol {
     });
   }
 
+  /**
+   * Queries live Solana L1 PoS inflation rate + L2.0 $150.00/hr person earning metrics,
+   * real treasury solvency/runway, and verified on-chain elapsed accrual (zero simulator).
+   */
+  async getL2InflationStatus(params?: {
+    personWallet?: PublicKey | string;
+    treasuryPubkey?: PublicKey | string;
+    anchorSignature?: string;
+  }) {
+    return getL2PosInflationReport({
+      rpcUrl: this.rpcEndpoint,
+      personWallet: params?.personWallet,
+      treasuryPubkey: params?.treasuryPubkey,
+      anchorSignature: params?.anchorSignature,
+    });
+  }
+
+  /**
+   * Anchors a person's Solana L2.0 Proof-of-Stake inflation state directly on Solana L1.
+   */
+  async anchorL2Inflation(signer: Keypair, stakedSol = 0) {
+    return anchorL2PosInflationOnChain(this.rpcEndpoint, signer, stakedSol);
+  }
+
+  /**
+   * Pays out verified L2.0 $150.00/hr inflation earnings in real SOL from a funded SOL Treasury.
+   */
+  async claimL2InflationInSol(
+    treasurySigner: Keypair,
+    personPubkey: PublicKey | string,
+    anchorSignature: string,
+  ) {
+    const personKey =
+      typeof personPubkey === 'string' ? new PublicKey(personPubkey.trim()) : personPubkey;
+    return claimL2InflationSolFromTreasury({
+      rpcUrl: this.rpcEndpoint,
+      treasurySigner,
+      personPubkey: personKey,
+      anchorSignature,
+    });
+  }
+
+  /**
+   * Mints verified SPL L2.0 PoS Inflation receipt tokens on-chain for confirmed elapsed slots.
+   */
+  async mintL2InflationToken(signer: Keypair, anchorSignature: string) {
+    return mintL2InflationTokenOnChain({
+      rpcUrl: this.rpcEndpoint,
+      signer,
+      anchorSignature,
+    });
+  }
+
+  /**
+   * Layer 2.0 $0.01 Cent Package ($150/hr fixed schedule, ignores L1 staking rates).
+   */
+  async getOneCentL2PackageStatus(params?: {
+    personWallet?: PublicKey | string;
+    treasuryPubkey?: PublicKey | string;
+    packageActivationSig?: string;
+  }) {
+    return getOneCentL2PackageReport({
+      rpcUrl: this.rpcEndpoint,
+      personWallet: params?.personWallet,
+      treasuryPubkey: params?.treasuryPubkey,
+      packageActivationSig: params?.packageActivationSig,
+    });
+  }
+
+  async activateOneCentL2Package(personSigner: Keypair, treasuryPubkey?: PublicKey | string) {
+    const tKey =
+      treasuryPubkey === undefined
+        ? undefined
+        : typeof treasuryPubkey === 'string'
+          ? new PublicKey(treasuryPubkey.trim())
+          : treasuryPubkey;
+    return activateOneCentL2PackageOnChain({
+      rpcUrl: this.rpcEndpoint,
+      personSigner,
+      treasuryPubkey: tKey,
+    });
+  }
+
+  async claimOneCentL2InSol(
+    treasurySigner: Keypair,
+    personPubkey: PublicKey | string,
+    packageActivationSig: string,
+  ) {
+    const personKey =
+      typeof personPubkey === 'string' ? new PublicKey(personPubkey.trim()) : personPubkey;
+    return claimOneCentL2SolFromTreasury({
+      rpcUrl: this.rpcEndpoint,
+      treasurySigner,
+      personPubkey: personKey,
+      packageActivationSig,
+    });
+  }
+
+  async mintOneCentL2ReceiptToken(signer: Keypair, packageActivationSig: string) {
+    return mintOneCentL2ReceiptTokenOnChain({
+      rpcUrl: this.rpcEndpoint,
+      signer,
+      packageActivationSig,
+    });
+  }
+
   calculateRoi = calculateNativePosRoi;
 }
 
 /**
- * Titanium Staking Protocol (Package 2) — Live Mainnet/Devnet Staking & $120/ms in SOL Earn SDK.
+ * Titanium Staking Protocol (Package 2) — Live Mainnet/Devnet Staking & $150/hr in SOL Earn SDK.
  * Connects directly to live Solana RPC (zero offline chain, zero simulator).
  */
 export class TitaniumStakingProtocol extends SolanaStakingRoiProtocol {

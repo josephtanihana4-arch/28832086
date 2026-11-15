@@ -45,16 +45,6 @@ interface OnChainSettlementEntry {
   timestampIso: string;
 }
 
-function solToLamportsBigInt(solVal: number | string): bigint {
-  const num = typeof solVal === 'number' ? solVal : Number(solVal);
-  if (!Number.isFinite(num) || num <= 0) return 0n;
-  const raw = typeof solVal === 'string' && !solVal.includes('e') ? solVal.trim() : num.toFixed(9);
-  const [wholePart = '0', fracPart = ''] = raw.split('.');
-  const cleanWhole = wholePart.replace(/[^0-9]/g, '') || '0';
-  const cleanFrac = fracPart.replace(/[^0-9]/g, '').padEnd(9, '0').slice(0, 9);
-  return BigInt(cleanWhole) * 1_000_000_000n + BigInt(cleanFrac);
-}
-
 function formatLamportsAsSol(lamports: bigint, fracDigits = 4): string {
   const safe = lamports < 0n ? 0n : lamports;
   const whole = safe / 1_000_000_000n;
@@ -85,9 +75,11 @@ export function ProtectionGuardian({
   const [walletStakes, setWalletStakes] = useState<WalletStakeAccountSummary[]>([]);
   const [walletStakesLoading, setWalletStakesLoading] = useState(false);
 
-  // 100% On-Chain Native PoS Permilsec Stream State (1,000,000% APR permilsec)
+  // 100% On-Chain Native PoS $ Rate Per-Hourly Stream State ($150.00 / hour)
   const [posPrincipalInput, setPosPrincipalInput] = useState<string>('100');
-  const [posAprPct, setPosAprPct] = useState<number>(1_000_000);
+  const [posHourlyUsdRate, setPosHourlyUsdRate] = useState<number>(150);
+  const [updatingRate, setUpdatingRate] = useState(false);
+  const [rateUpdateSig, setRateUpdateSig] = useState<string | null>(null);
   const [posTreasuryInput, setPosTreasuryInput] = useState<string>('');
   const [posAnchorSigInput, setPosAnchorSigInput] = useState<string>('');
   const [anchoringPos, setAnchoringPos] = useState(false);
@@ -97,7 +89,7 @@ export function ProtectionGuardian({
   const [posClaimBusy, setPosClaimBusy] = useState(false);
   const [onChainLedger, setOnChainLedger] = useState<OnChainSettlementEntry[]>([]);
 
-  // Live On-Chain $120/ms Funded Reward Stream State (100% Ledger-Anchored, Zero Off-Chain Timers)
+  // Live On-Chain $150.00/hr Funded Reward Stream State (100% Ledger-Anchored, Zero Off-Chain Timers)
   const [centAsset, setCentAsset] = useState<'usdc' | 'sol'>('usdc');
   const [centTreasuryInput, setCentTreasuryInput] = useState<string>('');
   const [centUsdcMintInput, setCentUsdcMintInput] = useState<string>('');
@@ -134,7 +126,7 @@ export function ProtectionGuardian({
         const qs = new URLSearchParams({
           cluster,
           principalSol: String(principalNum),
-          aprPct: String(posAprPct),
+          hourlyUsdRate: String(posHourlyUsdRate),
         });
         if (customRpcUrl) qs.set('rpcUrl', customRpcUrl);
         if (posAnchorSigInput.trim().length > 20) {
@@ -154,7 +146,7 @@ export function ProtectionGuardian({
         if (!silent) setChainLoading(false);
       }
     },
-    [cluster, customRpcUrl, posPrincipalInput, posAprPct, posAnchorSigInput],
+    [cluster, customRpcUrl, posPrincipalInput, posHourlyUsdRate, posAnchorSigInput],
   );
 
   useEffect(() => {
@@ -188,7 +180,7 @@ export function ProtectionGuardian({
         }
         const res = await fetch(`/api/usd-stream/snapshot?${qs.toString()}`);
         const json = await res.json();
-        if (!res.ok) throw new Error(json.error || 'Failed to fetch live $120/ms on-chain snapshot');
+        if (!res.ok) throw new Error(json.error || 'Failed to fetch live $150/hr on-chain snapshot');
         setCentSnapshot(json);
       } catch (err) {
         setCentError(err instanceof Error ? err.message : 'On-chain snapshot failed');
@@ -212,7 +204,7 @@ export function ProtectionGuardian({
     return () => clearInterval(timer);
   }, [centAnchorSigInput, loadCentSnapshot]);
 
-  const handleAnchorOnChain = async (streamType: 'native_pos' | 'usd_120_ms') => {
+  const handleAnchorOnChain = async (streamType: 'native_pos' | 'hourly_150_usd') => {
     if (!walletPubkey || !walletProvider) {
       onConnectWallet();
       return;
@@ -268,6 +260,42 @@ export function ProtectionGuardian({
     }
   };
 
+  const handleUpdateRateOnChain = async () => {
+    if (!walletPubkey || !walletProvider) {
+      onConnectWallet();
+      return;
+    }
+    setUpdatingRate(true);
+    setChainError(null);
+    setRateUpdateSig(null);
+    try {
+      const res = await fetch('/api/stream/update-rate-tx', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cluster,
+          rpcUrl: customRpcUrl,
+          walletPubkey,
+          hourlyUsdRate: posHourlyUsdRate,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Failed to build on-chain $150/hr rate update tx');
+      const sig = await signAndBroadcastBase64Tx(
+        walletProvider,
+        json.serializedBase64,
+        cluster,
+        customRpcUrl,
+      );
+      setRateUpdateSig(sig);
+      loadChainSnapshot(true);
+    } catch (err) {
+      setChainError(err instanceof Error ? err.message : 'On-chain rate update failed');
+    } finally {
+      setUpdatingRate(false);
+    }
+  };
+
   const handleClaimNativeSolOnChain = async () => {
     if (!walletPubkey || !walletProvider) {
       onConnectWallet();
@@ -293,7 +321,7 @@ export function ProtectionGuardian({
           treasuryPubkey,
           stakerPubkey: walletPubkey,
           principalSol: Math.max(0.01, Number(posPrincipalInput) || 100),
-          aprPct: posAprPct,
+          hourlyUsdRate: posHourlyUsdRate,
           anchorSignature: anchorSig,
         }),
       });
@@ -349,7 +377,7 @@ export function ProtectionGuardian({
           rpcUrl: customRpcUrl,
           userPubkey: walletPubkey,
           principalSol: Math.max(0.01, Number(posPrincipalInput) || 100),
-          aprPct: posAprPct,
+          hourlyUsdRate: posHourlyUsdRate,
           anchorSignature: anchorSig,
           tokenSymbol,
         }),
@@ -407,13 +435,17 @@ export function ProtectionGuardian({
     }
   }, [walletPubkey, loadWalletStakes]);
 
-  // Verified On-Chain BigInt lamport math for Native PoS (1,000,000% permilsec)
-  const posPrincipalLamports = solToLamportsBigInt(posPrincipalInput);
-  const posRatePctX100 = BigInt(Math.max(0, Math.round(posAprPct * 100)));
-  const posPerMsLamports = (posPrincipalLamports * posRatePctX100) / 10_000n;
-  const posPerSecLamports = posPerMsLamports * 1_000n;
+  // Verified On-Chain BigInt lamport math for Native PoS ($150.00 / hour per-hourly rate)
+  const liveSolPriceForPos = chainSnapshot?.solUsdPrice || centSnapshot?.solUsdPrice || 180;
+  const rateUsdScaled = BigInt(Math.max(0, Math.round(posHourlyUsdRate * 100)));
+  const priceScaled = BigInt(Math.max(1, Math.round(liveSolPriceForPos * 10000)));
+  const posPerSecLamports = (rateUsdScaled * 1_000_000_000n * 100n) / (3_600n * priceScaled);
+  const posPerHourLamports = (rateUsdScaled * 1_000_000_000n * 100n) / priceScaled;
   const posElapsedMsLive = chainSnapshot?.onChainElapsedMs ?? 0;
-  const posAccruedLamports = posPerMsLamports * BigInt(Math.max(0, posElapsedMsLive));
+  const posAccruedLamports =
+    (BigInt(Math.max(0, posElapsedMsLive)) * rateUsdScaled * 1_000_000_000n * 100n) /
+    (3_600_000n * priceScaled);
+  const posAccruedUsd = (Math.max(0, posElapsedMsLive) * posHourlyUsdRate) / 3_600_000;
 
   const centElapsedMsLive = centSnapshot?.onChainElapsedMs ?? 0;
 
@@ -548,7 +580,7 @@ export function ProtectionGuardian({
           }),
         });
         const json = await res.json();
-        if (!res.ok) throw new Error(json.error || 'Failed to build $120/ms SOL claim tx');
+        if (!res.ok) throw new Error(json.error || 'Failed to build $150/hr SOL claim tx');
         const sig = await signAndBroadcastBase64Tx(
           walletProvider,
           json.serializedBase64,
@@ -577,7 +609,7 @@ export function ProtectionGuardian({
           }),
         });
         const json = await res.json();
-        if (!res.ok) throw new Error(json.error || 'Failed to build $120/ms USDC claim tx');
+        if (!res.ok) throw new Error(json.error || 'Failed to build $150/hr USDC claim tx');
         const sig = await signAndBroadcastBase64Tx(
           walletProvider,
           json.serializedBase64,
@@ -606,16 +638,16 @@ export function ProtectionGuardian({
       <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 pb-6 border-b border-slate-800">
         <div className="space-y-1.5 max-w-2xl">
           <p className="text-xs font-medium text-emerald-400">
-            Live On-Chain Solana Native PoS (1,000,000% permilsec) &amp; {cluster} Protection Guard ({tokenSymbol})
+            Live On-Chain Solana Native PoS ($150.00 / hr) &amp; {cluster} Protection Guard ({tokenSymbol})
           </p>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-50">
-            1,000,000% permilsec On-Chain Solana PoS &amp; Protection Guard
+            $150.00 / Hour On-Chain Solana PoS &amp; Protection Guard
           </h1>
           <p className="text-sm text-slate-400">
             Anchor Solana ledger slots &amp; blockTime directly on-chain for{' '}
-            <span className="font-mono text-slate-200">1,000,000% permilsec</span> Native PoS
-            claims, stream funded $120/ms treasury rewards, and audit live {cluster} Stake Accounts
-            against delinquency or commission rug-pulls. Zero off-chain timers or simulators.
+            <span className="font-mono text-slate-200">$150.00 / hour</span> Native PoS claims,
+            stream funded $150/hr treasury rewards, and audit live {cluster} Stake Accounts against
+            delinquency or commission rug-pulls. Zero off-chain timers or simulators.
           </p>
         </div>
 
@@ -633,13 +665,13 @@ export function ProtectionGuardian({
         </button>
       </div>
 
-      {/* 100% On-Chain Solana Native PoS: 1,000,000% APR Per Millisecond (permilsec) */}
+      {/* 100% On-Chain Solana Native PoS: $150.00 Per-Hourly Rate */}
       <div className="rounded-lg border border-emerald-500/40 bg-[#0F1623] p-6 space-y-6">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-800 pb-4">
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-100">
               <Zap className="w-4 h-4 text-emerald-400" />
-              <span>Live On-Chain Solana Native PoS — 1,000,000% APR permilsec</span>
+              <span>Live On-Chain Solana Native PoS — $150.00 / Hour</span>
             </div>
             <p className="text-xs text-slate-400">
               100% ledger-anchored on <span className="font-mono text-slate-200">{cluster}</span>:{' '}
@@ -706,24 +738,45 @@ export function ProtectionGuardian({
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs gap-2">
                 <label className="font-medium text-slate-300">
-                  Native PoS APR (% permilsec)
+                  Native PoS $ Rate ($ / Hour)
                 </label>
                 <button
                   type="button"
-                  onClick={() => setPosAprPct(1_000_000)}
+                  onClick={() => setPosHourlyUsdRate(150)}
                   className="font-mono text-emerald-300 hover:underline whitespace-nowrap"
                 >
-                  Reset 1,000,000% permilsec
+                  Reset $150.00/hr
                 </button>
               </div>
-              <input
-                type="number"
-                min={0}
-                step={1000}
-                value={posAprPct}
-                onChange={(e) => setPosAprPct(Math.max(0, Number(e.target.value)))}
-                className="w-full px-3 py-2 text-sm font-mono tabular-nums bg-[#090D16] border border-slate-800 rounded-md text-slate-100 focus:outline-none focus:border-emerald-400"
-              />
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  step={10}
+                  value={posHourlyUsdRate}
+                  onChange={(e) => setPosHourlyUsdRate(Math.max(0, Number(e.target.value)))}
+                  className="flex-1 px-3 py-2 text-sm font-mono tabular-nums bg-[#090D16] border border-slate-800 rounded-md text-slate-100 focus:outline-none focus:border-emerald-400"
+                />
+                <button
+                  type="button"
+                  onClick={handleUpdateRateOnChain}
+                  disabled={updatingRate}
+                  className="px-3 py-2 text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-emerald-300 border border-slate-700 rounded-md transition-colors whitespace-nowrap shrink-0"
+                >
+                  {updatingRate ? 'Updating...' : 'Commit On-Chain'}
+                </button>
+              </div>
+              {rateUpdateSig && (
+                <a
+                  href={getExplorerTxUrl(rateUpdateSig, cluster)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] font-mono text-emerald-400 hover:underline"
+                >
+                  <span>Rate Updated On-Chain: {rateUpdateSig.slice(0, 14)}...</span>
+                  <ArrowUpRight className="w-3 h-3" />
+                </a>
+              )}
             </div>
 
             <div className="space-y-1.5">
@@ -776,12 +829,14 @@ export function ProtectionGuardian({
                     : `Anchor a confirmed transaction on ${cluster} to track live Native PoS accrual`}
                 </span>
                 <span className="font-mono text-emerald-300">
-                  +{posAprPct.toLocaleString()}% permilsec
+                  ${posHourlyUsdRate.toFixed(2)} / hr
                 </span>
               </div>
               <div className="text-3xl font-mono font-semibold tabular-nums text-emerald-400 break-all">
-                +{formatLamportsAsSol(posAccruedLamports, 4)}{' '}
-                <span className="text-sm font-normal text-slate-400">SOL</span>
+                +{formatLamportsAsSol(posAccruedLamports, 6)}{' '}
+                <span className="text-sm font-normal text-slate-400">
+                  SOL (+${posAccruedUsd.toFixed(4)} USD)
+                </span>
               </div>
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 font-mono tabular-nums">
                 <span>Exact Lamports: +{posAccruedLamports.toLocaleString()} lamports</span>
@@ -791,21 +846,21 @@ export function ProtectionGuardian({
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="p-4 rounded-lg border border-slate-800 bg-[#090D16]">
-                <div className="text-[11px] text-slate-400">On-Chain Growth / 1 ms</div>
-                <div className="mt-1 font-mono text-sm font-semibold tabular-nums text-slate-100 break-all">
-                  +{formatLamportsAsSol(posPerMsLamports, 2)} SOL
-                </div>
-              </div>
-              <div className="p-4 rounded-lg border border-slate-800 bg-[#090D16]">
                 <div className="text-[11px] text-slate-400">On-Chain Growth / 1 sec</div>
-                <div className="mt-1 font-mono text-sm font-semibold tabular-nums text-emerald-400 break-all">
-                  +{formatLamportsAsSol(posPerSecLamports, 0)} SOL/s
+                <div className="mt-1 font-mono text-sm font-semibold tabular-nums text-slate-100 break-all">
+                  +{formatLamportsAsSol(posPerSecLamports, 6)} SOL
                 </div>
               </div>
               <div className="p-4 rounded-lg border border-slate-800 bg-[#090D16]">
-                <div className="text-[11px] text-slate-400">Principal Multiplier / ms</div>
+                <div className="text-[11px] text-slate-400">On-Chain Growth / 1 hr</div>
+                <div className="mt-1 font-mono text-sm font-semibold tabular-nums text-emerald-400 break-all">
+                  +{formatLamportsAsSol(posPerHourLamports, 4)} SOL/hr
+                </div>
+              </div>
+              <div className="p-4 rounded-lg border border-slate-800 bg-[#090D16]">
+                <div className="text-[11px] text-slate-400">Hourly USD Rate</div>
                 <div className="mt-1 font-mono text-sm font-semibold tabular-nums text-emerald-300">
-                  {(posAprPct / 100).toLocaleString()}x / ms
+                  ${posHourlyUsdRate.toFixed(2)}/hr (${(posHourlyUsdRate * 24).toLocaleString()}/day)
                 </div>
               </div>
             </div>
@@ -852,18 +907,18 @@ export function ProtectionGuardian({
         </div>
       </div>
 
-      {/* Live On-Chain $120 / Millisecond Funded Reward Stream */}
+      {/* Live On-Chain $150.00 / Hour Funded Reward Stream */}
       <div className="rounded-lg border border-slate-800 bg-[#0F1623] p-6 space-y-6">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-800 pb-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2 text-sm font-semibold text-slate-100">
               <DollarSign className="w-4 h-4 text-emerald-400" />
-              <span>Live On-Chain $120 / Millisecond Reward Stream</span>
+              <span>Live On-Chain $150.00 / Hour Reward Stream</span>
             </div>
             <p className="text-xs text-slate-400">
-              Pays real on-chain rewards at <span className="font-mono text-slate-200">$120.00/ms</span>{' '}
-              (<span className="font-mono text-slate-200">$120,000/sec</span> ·{' '}
-              <span className="font-mono text-slate-200">$10.368B/day</span>) strictly from a funded
+              Pays real on-chain rewards at <span className="font-mono text-slate-200">$150.00/hr</span>{' '}
+              (<span className="font-mono text-slate-200">$0.0417/sec</span> ·{' '}
+              <span className="font-mono text-slate-200">$3,600.00/day</span>) strictly from a funded
               on-chain USDC or Native SOL Treasury—never off-chain, simulated, or minted without backing.
             </p>
           </div>
@@ -887,7 +942,7 @@ export function ProtectionGuardian({
                 </label>
                 <button
                   type="button"
-                  onClick={() => handleAnchorOnChain('usd_120_ms')}
+                  onClick={() => handleAnchorOnChain('hourly_150_usd')}
                   disabled={anchoringCent}
                   className="text-[11px] font-medium text-emerald-400 hover:underline whitespace-nowrap shrink-0"
                 >
@@ -913,7 +968,7 @@ export function ProtectionGuardian({
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
-                Funded USDC (120M μUSDC/ms)
+                Funded USDC (150M μUSDC/hr)
               </button>
               <button
                 type="button"
@@ -966,7 +1021,7 @@ export function ProtectionGuardian({
                   <span className="text-slate-400">On-Chain SOL Treasury</span>
                   <span className={centSnapshot.treasurySolBalance ? 'text-emerald-400' : 'text-slate-400'}>
                     {centSnapshot.treasurySolBalance !== null
-                      ? `${centSnapshot.treasurySolBalance} SOL (${centSnapshot.treasurySolRunwayMs ?? 0}ms runway)`
+                      ? `${centSnapshot.treasurySolBalance} SOL (${(centSnapshot.treasurySolRunwayHours ?? 0).toFixed(2)} hr runway)`
                       : 'Enter treasury pubkey'}
                   </span>
                 </div>
@@ -974,7 +1029,7 @@ export function ProtectionGuardian({
                   <span className="text-slate-400">On-Chain USDC Treasury</span>
                   <span className={centSnapshot.treasuryUsdcBalance ? 'text-emerald-400' : 'text-slate-400'}>
                     {centSnapshot.treasuryUsdcBalance !== null
-                      ? `${centSnapshot.treasuryUsdcBalance.toFixed(2)} USDC (${centSnapshot.treasuryUsdcRunwayMs ?? 0}ms runway)`
+                      ? `${centSnapshot.treasuryUsdcBalance.toFixed(2)} USDC (${(centSnapshot.treasuryUsdcRunwayHours ?? 0).toFixed(2)} hr runway)`
                       : 'Enter treasury pubkey'}
                   </span>
                 </div>
@@ -990,18 +1045,18 @@ export function ProtectionGuardian({
               className="w-full py-2.5 px-4 text-xs font-semibold bg-emerald-400 hover:bg-emerald-300 disabled:opacity-50 text-slate-950 rounded-md transition-colors"
             >
               {!walletPubkey
-                ? `Connect Wallet to Claim $120/ms on ${cluster}`
+                ? `Connect Wallet to Claim $150/hr on ${cluster}`
                 : centClaimBusy
                   ? 'Verifying Anchor, Treasury & Signing On-Chain...'
                   : centAsset === 'usdc'
-                    ? `Claim Verified $120/ms in Funded USDC (${cluster})`
-                    : `Claim Verified $120/ms in Funded SOL (${cluster})`}
+                    ? `Claim Verified $150/hr in Funded USDC (${cluster})`
+                    : `Claim Verified $150/hr in Funded SOL (${cluster})`}
             </button>
 
             {centClaimResult && (
               <div className="p-3.5 rounded-md border border-emerald-500/40 bg-[#090D16] space-y-1.5 text-xs font-mono">
                 <div className="text-emerald-400 font-semibold">
-                  $120/ms Settled (Anchor Slot {centClaimResult.anchorSlot.toLocaleString()} · {centClaimResult.verifiedOnChainElapsedMs.toLocaleString()} ms on-chain)
+                  $150/hr Settled (Anchor Slot {centClaimResult.anchorSlot.toLocaleString()} · {centClaimResult.verifiedOnChainElapsedMs.toLocaleString()} ms on-chain)
                 </div>
                 <div className="text-slate-300">
                   Paid: ${Number(centClaimResult.usdClaimed).toLocaleString()} USD ({centClaimResult.unitDetail})
@@ -1025,7 +1080,7 @@ export function ProtectionGuardian({
                 <span>
                   {centSnapshot?.anchorSignature
                     ? `On-Chain Verified Claim (Slot ${centSnapshot.anchorSlot.toLocaleString()} -> ${(centSnapshot.currentSlot ?? centSnapshot.anchorSlot).toLocaleString()})`
-                    : `Anchor a confirmed transaction on ${cluster} to track live $120/ms ledger blockTime`}
+                    : `Anchor a confirmed transaction on ${cluster} to track live $150/hr ledger blockTime`}
                 </span>
                 <span className="font-mono text-emerald-400">
                   {centSnapshot?.anchorSignature
@@ -1034,17 +1089,17 @@ export function ProtectionGuardian({
                 </span>
               </div>
               <div className="text-3xl font-mono font-semibold tabular-nums text-emerald-400 break-all">
-                +${(centElapsedMsLive * 120).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}{' '}
+                +${((centElapsedMsLive * 150) / 3_600_000).toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 })}{' '}
                 <span className="text-sm font-normal text-slate-400">
-                  USD (@ $120.00/ms)
+                  USD (@ $150.00/hr)
                 </span>
               </div>
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 font-mono tabular-nums">
                 <span>
                   {centAsset === 'usdc'
-                    ? `Exact Settlement: +${(centElapsedMsLive * 120_000_000).toLocaleString()} micro-USDC`
+                    ? `Exact Settlement: +${Math.floor((centElapsedMsLive * 150_000_000) / 3_600_000).toLocaleString()} micro-USDC`
                     : centSnapshot
-                      ? `Live SOL Equivalent: +${((centElapsedMsLive * 120) / centSnapshot.solUsdPrice).toFixed(4)} SOL`
+                      ? `Live SOL Equivalent: +${(((centElapsedMsLive * 150) / 3_600_000) / centSnapshot.solUsdPrice).toFixed(6)} SOL`
                       : 'Loading oracle...'}
                 </span>
                 <span>100% On-Chain BlockTime &amp; Treasury Solvency Enforced</span>
@@ -1056,30 +1111,30 @@ export function ProtectionGuardian({
                 <div className="p-4 rounded-lg border border-slate-800 bg-[#090D16]">
                   <div className="text-[11px] text-slate-400">Exact Payout Rate</div>
                   <div className="mt-1 font-mono text-sm font-semibold tabular-nums text-slate-100">
-                    $120 / ms ($120k/s)
+                    $150.00 / hr ($0.0417/s)
                   </div>
                   <div className="mt-0.5 font-mono text-[11px] text-slate-500">
-                    120M μUSDC or {(centSnapshot.lamportsPerMsAtLivePrice / 1e9).toFixed(4)} SOL/ms
+                    150M μUSDC/hr or {(centSnapshot.lamportsPerHourAtLivePrice / 1e9).toFixed(4)} SOL/hr
                   </div>
                 </div>
                 <div className="p-4 rounded-lg border border-slate-800 bg-[#090D16]">
                   <div className="text-[11px] text-slate-400">Daily Funded Requirement</div>
                   <div className="mt-1 font-mono text-sm font-semibold tabular-nums text-slate-100">
-                    ${(centSnapshot.rateUsdPerDay / 1e9).toFixed(3)}B/day
+                    ${centSnapshot.rateUsdPerDay.toLocaleString()}/day
                   </div>
                   <div className="mt-0.5 font-mono text-[11px] text-slate-500">
-                    ~{Math.round(centSnapshot.rateUsdPerDay / centSnapshot.solUsdPrice).toLocaleString()} SOL/day
+                    ~{(centSnapshot.rateUsdPerDay / centSnapshot.solUsdPrice).toFixed(2)} SOL/day
                   </div>
                 </div>
                 <div className="p-4 rounded-lg border border-slate-800 bg-[#090D16]">
                   <div className="text-[11px] text-slate-400">
-                    Native PoS Stake Needed ({centSnapshot.nativePosAprPct.toLocaleString()}% permilsec)
+                    Native PoS $ Rate (Per-Hourly)
                   </div>
                   <div className="mt-1 font-mono text-sm font-semibold tabular-nums text-emerald-400">
-                    {centSnapshot.requiredSolPrincipalForNativePos001CentMs.toLocaleString()} SOL
+                    {centSnapshot.nativePosRateLabel}
                   </div>
                   <div className="mt-0.5 font-mono text-[11px] text-slate-500">
-                    Self-sustaining L1 yield at 1,000,000% permilsec
+                    ~{(150 / centSnapshot.solUsdPrice).toFixed(4)} SOL/hr @ ${centSnapshot.solUsdPrice.toFixed(2)}
                   </div>
                 </div>
               </div>

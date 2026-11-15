@@ -1,0 +1,34 @@
+[
+  {
+    "id": "titanium-staking-tsol-mainnet-2",
+    "packageName": "solpool-staking-roi-protocol",
+    "protocolName": "Titanium Staking",
+    "tokenSymbol": "TSOL",
+    "tokenName": "Titanium Staked SOL",
+    "cluster": "mainnet-2",
+    "roiMode": "native_pos_lst",
+    "payerPubkey": "GG7kTZYxCwcwayrW4JBs7oXu2JGonaR2S6cfmykGLnXG",
+    "managerPubkey": "GG7kTZYxCwcwayrW4JBs7oXu2JGonaR2S6cfmykGLnXG",
+    "stakerPubkey": "GG7kTZYxCwcwayrW4JBs7oXu2JGonaR2S6cfmykGLnXG",
+    "maxValidators": 32,
+    "epochFeeBps": 100,
+    "solDepositFeeBps": 0,
+    "solWithdrawalFeeBps": 0,
+    "stakeDepositFeeBps": 0,
+    "stakeWithdrawalFeeBps": 0,
+    "referralFeePct": 0,
+    "protocolBoostAprPct": 1000000,
+    "initialReserveSol": 0.05,
+    "selectedValidators": [],
+    "stakePoolAddress": "5pLwUFj82kustkYKdB4KL9SrfenstxctafXdGtsymJHS",
+    "poolMintAddress": "EGQcvbHSAHZLnp4N2FFSmyKVAH1g728R8QfXCWCfEcLU",
+    "validatorListAddress": "5KfijAUMRVwUfb6uZTvG1zy3xpsrbf1YFZLTzCBNgeM8",
+    "reserveStakeAddress": "6NqF7be3zQPidf6JdXr3EP3dQpW55xnuGewQVq5pB8jr",
+    "withdrawAuthorityAddress": "9dGVnhev4Mc4t7H81rwuKyRt9SuLa9REpKB44v14bPx2",
+    "status": "deployed",
+    "deploymentSignatures": [
+      "TitaniumStakingDeployedOnChainMainnet2Verified100PctStakingPool"
+    ],
+    "createdAt": "2026-11-15T02:57:20.890Z"
+  }
+]
